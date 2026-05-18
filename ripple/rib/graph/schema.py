@@ -1,0 +1,183 @@
+from __future__ import annotations
+
+from datetime import datetime
+from enum import Enum
+from typing import Optional
+
+from pydantic import BaseModel
+
+
+class TransportKind(str, Enum):
+    REST = "REST"
+    KAFKA = "KAFKA"
+    GRPC = "GRPC"
+    GRAPHQL = "GRAPHQL"
+    SHARED_LIB = "SHARED_LIB"
+
+
+class DisagreementKind(str, Enum):
+    UNIT_MISMATCH = "UNIT_MISMATCH"
+    TYPE_CHANGED = "TYPE_CHANGED"
+    NULLABLE_CHANGED = "NULLABLE_CHANGED"
+    ENUM_VALUE_CHANGED = "ENUM_VALUE_CHANGED"
+    CONSTRAINT_UNKNOWN_TO_CONSUMER = "CONSTRAINT_UNKNOWN_TO_CONSUMER"
+    FORMAT_MISMATCH = "FORMAT_MISMATCH"
+    FIELD_REMOVED = "FIELD_REMOVED"
+    NEW_REQUIRED_FIELD = "NEW_REQUIRED_FIELD"
+
+
+class Severity(str, Enum):
+    CRITICAL = "CRITICAL"
+    HIGH = "HIGH"
+    MEDIUM = "MEDIUM"
+    LOW = "LOW"
+
+
+class Constraint(BaseModel):
+    kind: str
+    value: str
+    source: str
+
+
+class FieldNode(BaseModel):
+    fqn: str
+    name: str
+    producer_service: str
+    transport: TransportKind
+    endpoint_or_topic: str
+    field_path: str
+    declared_type: str
+    nullable: bool
+    deprecated: bool = False
+    constraints: list[Constraint] = []
+    schema_source_path: str = ""
+
+
+class SymbolNode(BaseModel):
+    scip_id: str
+    display_name: str
+    kind: str
+    service_name: str
+    file_path: str
+    line: int
+    containing_function: str = ""
+    visibility: str = "public"
+
+
+class FieldUsage(BaseModel):
+    field_fqn: str
+    consumer_service: str
+    file_path: str
+    line: int
+    expression: str
+    surrounding_context: str
+    containing_function: str = ""
+    scip_symbol_id: str = ""
+
+
+class HistorySignal(BaseModel):
+    field_fqn: str
+    commit_hash: str
+    commit_message: str
+    author: str
+    committed_at: datetime
+    risk_keywords: list[str] = []
+
+
+class SemanticProfile(BaseModel):
+    field_fqn: str
+    unit: Optional[str]
+    domain: Optional[str]
+    invariants: list[str] = []
+    risk_flags: list[str] = []
+    confidence: float
+    evidence: list[str] = []
+    generated_at: datetime
+    source_commit_hash: str = ""
+
+
+class ConsumerBelief(BaseModel):
+    consumer_service: str
+    field_fqn: str
+    assumed_unit: Optional[str]
+    assumed_type: Optional[str]
+    assumed_nullable: Optional[bool]
+    assumed_format: Optional[str]
+    inferred_constraints: list[str] = []
+    usage_expressions: list[str] = []
+    confidence: float
+    extracted_at: datetime
+    source_file_hash: str = ""
+
+
+class Disagreement(BaseModel):
+    field_fqn: str
+    consumer_service: str
+    kind: DisagreementKind
+    producer_says: str
+    consumer_assumes: str
+    severity: Severity
+    evidence: list[str] = []
+    explanation: str = ""
+    detected_at: datetime
+    resolved_at: Optional[datetime] = None
+    fix_pr_url: str = ""
+
+
+class BlastRadiusEntry(BaseModel):
+    consumer_service: str
+    repo_url: str
+    usages: list[FieldUsage]
+    active_disagreements: list[Disagreement]
+    belief: Optional[ConsumerBelief]
+
+
+class BlastRadius(BaseModel):
+    field: FieldNode
+    semantic_profile: Optional[SemanticProfile]
+    consumers: list[BlastRadiusEntry]
+    total_consumers: int
+    critical_disagreement_count: int
+
+
+class ServiceRole(str, Enum):
+    PRODUCER = "producer"
+    CONSUMER = "consumer"
+
+
+class ServiceSpec(BaseModel):
+    repo_url: str
+    service_name: str = ""
+    roles: list[ServiceRole]
+    openapi_path: str = "openapi.yaml"
+
+
+class IngestEcosystemRequest(BaseModel):
+    services: list[ServiceSpec]
+    tenant_id: str = "default"
+
+
+class IngestionRequest(BaseModel):
+    producer_repo_url: str
+    consumer_repo_urls: list[str]
+    openapi_path: str = "openapi.yaml"
+
+
+class IngestionResult(BaseModel):
+    services_indexed: list[str]
+    fields_extracted: int
+    usages_found: int
+    beliefs_extracted: int
+    disagreements_detected: int
+    llm_profiles_generated: int
+    duration_seconds: float
+    workflow_id: str = ""
+    errors: list[str] = []
+
+
+class IngestWorkflowStatus(BaseModel):
+    workflow_id: str
+    run_id: str
+    status: str
+    progress: dict[str, str | int] = {}
+    result: IngestionResult | None = None

@@ -1,0 +1,538 @@
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Optional
+
+import psycopg
+from psycopg.rows import dict_row
+
+from ripple.rib.graph.schema import (
+    BlastRadius,
+    BlastRadiusEntry,
+    Constraint,
+    ConsumerBelief,
+    Disagreement,
+    DisagreementKind,
+    FieldNode,
+    FieldUsage,
+    HistorySignal,
+    SemanticProfile,
+    Severity,
+    SymbolNode,
+    TransportKind,
+)
+
+SCHEMA_VERSION = 1
+_SCHEMA_PATH = Path(__file__).with_name("schema.sql")
+
+
+class PostgresStore:
+    def __init__(self, database_url: str) -> None:
+        self._database_url = database_url
+        self._initialize_schema()
+
+    def _connect(self) -> psycopg.Connection[Any]:
+        return psycopg.connect(self._database_url, row_factory=dict_row)
+
+    def close(self) -> None:
+        pass
+
+    def _initialize_schema(self) -> None:
+        ddl = _SCHEMA_PATH.read_text()
+        with self._connect() as conn:
+            conn.execute(ddl)
+            row = conn.execute(
+                "SELECT version FROM schema_version LIMIT 1"
+            ).fetchone()
+            if row is None:
+                conn.execute(
+                    "INSERT INTO schema_version (version) VALUES (%s)",
+                    (SCHEMA_VERSION,),
+                )
+            conn.commit()
+
+    def upsert_field(self, field: FieldNode) -> None:
+        constraints_json = json.dumps([c.model_dump() for c in field.constraints])
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO fields (
+                    fqn, name, producer_service, transport, endpoint_or_topic,
+                    field_path, declared_type, nullable, deprecated,
+                    schema_source_path, constraints_json
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                ON CONFLICT (fqn) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    producer_service = EXCLUDED.producer_service,
+                    transport = EXCLUDED.transport,
+                    endpoint_or_topic = EXCLUDED.endpoint_or_topic,
+                    field_path = EXCLUDED.field_path,
+                    declared_type = EXCLUDED.declared_type,
+                    nullable = EXCLUDED.nullable,
+                    deprecated = EXCLUDED.deprecated,
+                    schema_source_path = EXCLUDED.schema_source_path,
+                    constraints_json = EXCLUDED.constraints_json
+                """,
+                (
+                    field.fqn,
+                    field.name,
+                    field.producer_service,
+                    field.transport.value,
+                    field.endpoint_or_topic,
+                    field.field_path,
+                    field.declared_type,
+                    field.nullable,
+                    field.deprecated,
+                    field.schema_source_path,
+                    constraints_json,
+                ),
+            )
+            conn.commit()
+
+    def upsert_symbol(self, symbol: SymbolNode) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO symbols (
+                    scip_id, display_name, kind, service_name,
+                    file_path, line, containing_function, visibility
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (scip_id) DO UPDATE SET
+                    display_name = EXCLUDED.display_name,
+                    kind = EXCLUDED.kind,
+                    service_name = EXCLUDED.service_name,
+                    file_path = EXCLUDED.file_path,
+                    line = EXCLUDED.line,
+                    containing_function = EXCLUDED.containing_function,
+                    visibility = EXCLUDED.visibility
+                """,
+                (
+                    symbol.scip_id,
+                    symbol.display_name,
+                    symbol.kind,
+                    symbol.service_name,
+                    symbol.file_path,
+                    symbol.line,
+                    symbol.containing_function,
+                    symbol.visibility,
+                ),
+            )
+            conn.commit()
+
+    def upsert_usage(self, usage: FieldUsage) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO field_usages (
+                    field_fqn, consumer_service, file_path, line,
+                    expression, surrounding_context, containing_function, scip_symbol_id
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (field_fqn, consumer_service, file_path, line) DO UPDATE SET
+                    expression = EXCLUDED.expression,
+                    surrounding_context = EXCLUDED.surrounding_context,
+                    containing_function = EXCLUDED.containing_function,
+                    scip_symbol_id = EXCLUDED.scip_symbol_id
+                """,
+                (
+                    usage.field_fqn,
+                    usage.consumer_service,
+                    usage.file_path,
+                    usage.line,
+                    usage.expression,
+                    usage.surrounding_context,
+                    usage.containing_function,
+                    usage.scip_symbol_id,
+                ),
+            )
+            conn.commit()
+
+    def upsert_history_signal(self, signal: HistorySignal) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO history_signals (
+                    field_fqn, commit_hash, commit_message, author,
+                    committed_at, risk_keywords_json
+                ) VALUES (%s, %s, %s, %s, %s, %s::jsonb)
+                """,
+                (
+                    signal.field_fqn,
+                    signal.commit_hash,
+                    signal.commit_message,
+                    signal.author,
+                    signal.committed_at,
+                    json.dumps(signal.risk_keywords),
+                ),
+            )
+            conn.commit()
+
+    def upsert_semantic_profile(self, profile: SemanticProfile) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO semantic_profiles (
+                    field_fqn, unit, domain, invariants_json, risk_flags_json,
+                    confidence, evidence_json, generated_at, source_commit_hash
+                ) VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s::jsonb, %s, %s)
+                ON CONFLICT (field_fqn) DO UPDATE SET
+                    unit = EXCLUDED.unit,
+                    domain = EXCLUDED.domain,
+                    invariants_json = EXCLUDED.invariants_json,
+                    risk_flags_json = EXCLUDED.risk_flags_json,
+                    confidence = EXCLUDED.confidence,
+                    evidence_json = EXCLUDED.evidence_json,
+                    generated_at = EXCLUDED.generated_at,
+                    source_commit_hash = EXCLUDED.source_commit_hash
+                """,
+                (
+                    profile.field_fqn,
+                    profile.unit,
+                    profile.domain,
+                    json.dumps(profile.invariants),
+                    json.dumps(profile.risk_flags),
+                    profile.confidence,
+                    json.dumps(profile.evidence),
+                    profile.generated_at,
+                    profile.source_commit_hash,
+                ),
+            )
+            conn.commit()
+
+    def upsert_consumer_belief(self, belief: ConsumerBelief) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO consumer_beliefs (
+                    consumer_service, field_fqn, assumed_unit, assumed_type,
+                    assumed_nullable, assumed_format, inferred_constraints_json,
+                    usage_expressions_json, confidence, extracted_at, source_file_hash
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s)
+                ON CONFLICT (consumer_service, field_fqn) DO UPDATE SET
+                    assumed_unit = EXCLUDED.assumed_unit,
+                    assumed_type = EXCLUDED.assumed_type,
+                    assumed_nullable = EXCLUDED.assumed_nullable,
+                    assumed_format = EXCLUDED.assumed_format,
+                    inferred_constraints_json = EXCLUDED.inferred_constraints_json,
+                    usage_expressions_json = EXCLUDED.usage_expressions_json,
+                    confidence = EXCLUDED.confidence,
+                    extracted_at = EXCLUDED.extracted_at,
+                    source_file_hash = EXCLUDED.source_file_hash
+                """,
+                (
+                    belief.consumer_service,
+                    belief.field_fqn,
+                    belief.assumed_unit,
+                    belief.assumed_type,
+                    belief.assumed_nullable,
+                    belief.assumed_format,
+                    json.dumps(belief.inferred_constraints),
+                    json.dumps(belief.usage_expressions),
+                    belief.confidence,
+                    belief.extracted_at,
+                    belief.source_file_hash,
+                ),
+            )
+            conn.commit()
+
+    def upsert_disagreement(self, disagreement: Disagreement) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO disagreements (
+                    field_fqn, consumer_service, kind, producer_says, consumer_assumes,
+                    severity, evidence_json, explanation, detected_at, resolved_at, fix_pr_url
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s)
+                ON CONFLICT (field_fqn, consumer_service, kind)
+                WHERE resolved_at IS NULL DO NOTHING
+                """,
+                (
+                    disagreement.field_fqn,
+                    disagreement.consumer_service,
+                    disagreement.kind.value,
+                    disagreement.producer_says,
+                    disagreement.consumer_assumes,
+                    disagreement.severity.value,
+                    json.dumps(disagreement.evidence),
+                    disagreement.explanation,
+                    disagreement.detected_at,
+                    disagreement.resolved_at,
+                    disagreement.fix_pr_url,
+                ),
+            )
+            conn.commit()
+
+    def get_field(self, field_fqn: str) -> Optional[FieldNode]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM fields WHERE fqn = %s", (field_fqn,)
+            ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_field(row)
+
+    def get_semantic_profile(self, field_fqn: str) -> Optional[SemanticProfile]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM semantic_profiles WHERE field_fqn = %s",
+                (field_fqn,),
+            ).fetchone()
+        if row is None:
+            return None
+        return SemanticProfile(
+            field_fqn=row["field_fqn"],
+            unit=row["unit"],
+            domain=row["domain"],
+            invariants=_json_list(row["invariants_json"]),
+            risk_flags=_json_list(row["risk_flags_json"]),
+            confidence=row["confidence"],
+            evidence=_json_list(row["evidence_json"]),
+            generated_at=row["generated_at"],
+            source_commit_hash=row["source_commit_hash"] or "",
+        )
+
+    def get_consumer_belief(
+        self, consumer_service: str, field_fqn: str
+    ) -> Optional[ConsumerBelief]:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM consumer_beliefs
+                WHERE consumer_service = %s AND field_fqn = %s
+                """,
+                (consumer_service, field_fqn),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_belief(row)
+
+    def get_usages_for_field(self, field_fqn: str) -> list[FieldUsage]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM field_usages WHERE field_fqn = %s", (field_fqn,)
+            ).fetchall()
+        return [self._row_to_usage(row) for row in rows]
+
+    def get_history_signals(self, field_fqn: str) -> list[HistorySignal]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM history_signals
+                WHERE field_fqn = %s ORDER BY committed_at DESC
+                """,
+                (field_fqn,),
+            ).fetchall()
+        return [
+            HistorySignal(
+                field_fqn=row["field_fqn"],
+                commit_hash=row["commit_hash"],
+                commit_message=row["commit_message"],
+                author=row["author"],
+                committed_at=row["committed_at"],
+                risk_keywords=_json_list(row["risk_keywords_json"]),
+            )
+            for row in rows
+        ]
+
+    def get_active_disagreements(self) -> list[Disagreement]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM disagreements
+                WHERE resolved_at IS NULL ORDER BY detected_at DESC
+                """
+            ).fetchall()
+        return [self._row_to_disagreement(row) for row in rows]
+
+    def get_disagreements_for_field(self, field_fqn: str) -> list[Disagreement]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM disagreements WHERE field_fqn = %s", (field_fqn,)
+            ).fetchall()
+        return [self._row_to_disagreement(row) for row in rows]
+
+    def get_blast_radius(self, field_fqn: str) -> BlastRadius:
+        field = self.get_field(field_fqn)
+        if field is None:
+            raise ValueError(f"Field not found: {field_fqn}")
+
+        profile = self.get_semantic_profile(field_fqn)
+        usages = self.get_usages_for_field(field_fqn)
+        disagreements = {
+            (d.consumer_service, d.field_fqn): d
+            for d in self.get_disagreements_for_field(field_fqn)
+            if d.resolved_at is None
+        }
+
+        consumers_by_service: dict[str, list[FieldUsage]] = {}
+        for usage in usages:
+            consumers_by_service.setdefault(usage.consumer_service, []).append(usage)
+
+        entries: list[BlastRadiusEntry] = []
+        critical_count = 0
+        for service_name, service_usages in consumers_by_service.items():
+            belief = self.get_consumer_belief(service_name, field_fqn)
+            active = [
+                disagreements[(service_name, field_fqn)]
+                for key in [(service_name, field_fqn)]
+                if key in disagreements
+            ]
+            for disagreement in active:
+                if disagreement.severity == Severity.CRITICAL:
+                    critical_count += 1
+            entries.append(
+                BlastRadiusEntry(
+                    consumer_service=service_name,
+                    repo_url="",
+                    usages=service_usages,
+                    active_disagreements=active,
+                    belief=belief,
+                )
+            )
+
+        return BlastRadius(
+            field=field,
+            semantic_profile=profile,
+            consumers=entries,
+            total_consumers=len(entries),
+            critical_disagreement_count=critical_count,
+        )
+
+    def get_all_fields(self) -> list[FieldNode]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT * FROM fields").fetchall()
+        return [self._row_to_field(row) for row in rows]
+
+    def get_fields_for_service(self, service_name: str) -> list[FieldNode]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM fields WHERE producer_service = %s",
+                (service_name,),
+            ).fetchall()
+        return [self._row_to_field(row) for row in rows]
+
+    def mark_disagreement_resolved(
+        self, field_fqn: str, consumer_service: str, fix_pr_url: str
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE disagreements
+                SET resolved_at = %s, fix_pr_url = %s
+                WHERE field_fqn = %s AND consumer_service = %s AND resolved_at IS NULL
+                """,
+                (
+                    datetime.now(timezone.utc),
+                    fix_pr_url,
+                    field_fqn,
+                    consumer_service,
+                ),
+            )
+            conn.commit()
+
+    def get_file_content_hash(self, file_path: str, service_name: str) -> Optional[str]:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT content_hash FROM indexed_files
+                WHERE service_name = %s AND file_path = %s
+                """,
+                (service_name, file_path),
+            ).fetchone()
+        return row["content_hash"] if row else None
+
+    def upsert_indexed_file(
+        self, service_name: str, file_path: str, content_hash: str
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO indexed_files (service_name, file_path, content_hash, indexed_at)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (service_name, file_path) DO UPDATE SET
+                    content_hash = EXCLUDED.content_hash,
+                    indexed_at = EXCLUDED.indexed_at
+                """,
+                (
+                    service_name,
+                    file_path,
+                    content_hash,
+                    datetime.now(timezone.utc),
+                ),
+            )
+            conn.commit()
+
+    def ping(self) -> bool:
+        with self._connect() as conn:
+            conn.execute("SELECT 1")
+        return True
+
+    def _row_to_field(self, row: dict[str, Any]) -> FieldNode:
+        constraints_raw = _json_list(row["constraints_json"])
+        constraints = [Constraint(**c) for c in constraints_raw]
+        return FieldNode(
+            fqn=row["fqn"],
+            name=row["name"],
+            producer_service=row["producer_service"],
+            transport=TransportKind(row["transport"]),
+            endpoint_or_topic=row["endpoint_or_topic"],
+            field_path=row["field_path"],
+            declared_type=row["declared_type"],
+            nullable=row["nullable"],
+            deprecated=row["deprecated"],
+            constraints=constraints,
+            schema_source_path=row["schema_source_path"] or "",
+        )
+
+    def _row_to_usage(self, row: dict[str, Any]) -> FieldUsage:
+        return FieldUsage(
+            field_fqn=row["field_fqn"],
+            consumer_service=row["consumer_service"],
+            file_path=row["file_path"],
+            line=row["line"],
+            expression=row["expression"],
+            surrounding_context=row["surrounding_context"] or "",
+            containing_function=row["containing_function"] or "",
+            scip_symbol_id=row["scip_symbol_id"] or "",
+        )
+
+    def _row_to_belief(self, row: dict[str, Any]) -> ConsumerBelief:
+        return ConsumerBelief(
+            consumer_service=row["consumer_service"],
+            field_fqn=row["field_fqn"],
+            assumed_unit=row["assumed_unit"],
+            assumed_type=row["assumed_type"],
+            assumed_nullable=row["assumed_nullable"],
+            assumed_format=row["assumed_format"],
+            inferred_constraints=_json_list(row["inferred_constraints_json"]),
+            usage_expressions=_json_list(row["usage_expressions_json"]),
+            confidence=row["confidence"],
+            extracted_at=row["extracted_at"],
+            source_file_hash=row["source_file_hash"] or "",
+        )
+
+    def _row_to_disagreement(self, row: dict[str, Any]) -> Disagreement:
+        return Disagreement(
+            field_fqn=row["field_fqn"],
+            consumer_service=row["consumer_service"],
+            kind=DisagreementKind(row["kind"]),
+            producer_says=row["producer_says"],
+            consumer_assumes=row["consumer_assumes"],
+            severity=Severity(row["severity"]),
+            evidence=_json_list(row["evidence_json"]),
+            explanation=row["explanation"] or "",
+            detected_at=row["detected_at"],
+            resolved_at=row["resolved_at"],
+            fix_pr_url=row["fix_pr_url"] or "",
+        )
+
+
+def _json_list(value: Any) -> list:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        return json.loads(value)
+    return list(value)

@@ -1,0 +1,40 @@
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Environment
+.env
+*.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# Temporal / local data
+.temporal/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Cloned repos (runtime workspace)
+/workspace/
+/tmp/
+
+# Node (if any consumer repos get cloned in place)
+node_modules/

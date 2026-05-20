@@ -10,8 +10,11 @@ from ripple.ingest import (
     ingestion_request_to_ecosystem,
     start_ingest_workflow,
 )
+from ripple.analyze import start_analyze_workflow
 from ripple.rib.graph.factory import get_store
 from ripple.rib.graph.schema import (
+    AnalyzePRRequest,
+    AnalyzeWorkflowStatus,
     IngestEcosystemRequest,
     IngestionRequest,
     IngestWorkflowStatus,
@@ -85,3 +88,8 @@ async def ingest_legacy(request: IngestionRequest):
 @app.get("/ingest/{workflow_id}", response_model=IngestWorkflowStatus)
 async def ingest_status(workflow_id: str):
     return await get_ingest_status(workflow_id)
+
+
+@app.post("/api/analyze", response_model=AnalyzeWorkflowStatus)
+async def analyze_pr(request: AnalyzePRRequest):
+    return await start_analyze_workflow(request)

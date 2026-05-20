@@ -6,7 +6,7 @@ import os
 
 from temporalio.worker import Worker
 
-from ripple.activities.git_activities import cleanup_workspace_activity, clone_repo_activity
+from ripple.activities.git_activities import cleanup_workspace_activity, clone_repo_activity, get_pr_diff_activity
 from ripple.activities.index_activities import (
     ensure_scip_index_activity,
     index_consumer_activity,
@@ -14,6 +14,7 @@ from ripple.activities.index_activities import (
 )
 from ripple.logging_config import configure_logging
 from ripple.temporal_client import get_temporal_client
+from ripple.workflows.analyze_pr import AnalyzePRWorkflow
 from ripple.workflows.ingest_ecosystem import IngestEcosystemWorkflow
 from ripple.workflows.ingest_service import IngestServiceWorkflow
 
@@ -30,10 +31,11 @@ async def main() -> None:
     worker = Worker(
         client,
         task_queue="rib",
-        workflows=[IngestEcosystemWorkflow, IngestServiceWorkflow],
+        workflows=[IngestEcosystemWorkflow, IngestServiceWorkflow, AnalyzePRWorkflow],
         activities=[
             clone_repo_activity,
             cleanup_workspace_activity,
+            get_pr_diff_activity,
             ensure_scip_index_activity,
             index_producer_activity,
             index_consumer_activity,
@@ -46,6 +48,7 @@ async def main() -> None:
         activities=[
             clone_repo_activity,
             cleanup_workspace_activity,
+            get_pr_diff_activity,
             ensure_scip_index_activity,
         ],
     )

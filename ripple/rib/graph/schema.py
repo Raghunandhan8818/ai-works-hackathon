@@ -181,3 +181,19 @@ class IngestWorkflowStatus(BaseModel):
     status: str
     progress: dict[str, str | int] = {}
     result: IngestionResult | None = None
+
+
+class AnalyzePRRequest(BaseModel):
+    repo: str
+    prNumber: int
+    branch: str
+    baseBranch: str
+    headCommit: str
+
+
+class AnalyzeWorkflowStatus(BaseModel):
+    workflow_id: str
+    run_id: str
+    status: str
+    diff_path: str = ""
+    lines_changed: int = 0

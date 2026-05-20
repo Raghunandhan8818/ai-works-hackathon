@@ -317,7 +317,7 @@ def _wrap(text: str, width: int = 80, indent: str = "") -> str:
 
 
 def chat(api_url: str) -> None:
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    api_key = ""
     if not api_key:
         print(_c(RED, "Error: ANTHROPIC_API_KEY not set. Source your .env first."))
         sys.exit(1)

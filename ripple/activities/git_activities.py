@@ -80,8 +80,10 @@ async def get_pr_diff_activity(
     lines_changed = len([l for l in diff_content.splitlines() if l.startswith(("+", "-")) and not l.startswith(("+++", "---"))])
     logger.info("activity get_pr_diff done diff_path=%s lines_changed=%d", diff_path, lines_changed)
 
+    # Cap content at 50k chars — Temporal payload limit is ~2MB, this stays well under
     return {
         "workspace": str(workspace),
         "diff_path": str(diff_path),
         "lines_changed": lines_changed,
+        "diff_content": diff_content[:50_000],
     }

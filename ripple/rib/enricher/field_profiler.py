@@ -12,27 +12,21 @@ PROFILE_PROMPT = """You analyze API contract fields. Given structured field meta
 Do not invent facts not supported by the input."""
 
 
-def profile_field(
-    field: FieldNode,
-    history_signals: list[HistorySignal] | None = None,
-    api_key: str | None = None,
-) -> SemanticProfile:
-    history_signals = history_signals or []
-    payload = {
+def _build_payload(field: FieldNode, history_signals: list[HistorySignal]) -> dict[str, Any]:
+    return {
         "fqn": field.fqn,
         "name": field.name,
         "declared_type": field.declared_type,
         "nullable": field.nullable,
         "constraints": [c.model_dump() for c in field.constraints],
         "history": [
-            {
-                "message": s.commit_message,
-                "risk_keywords": s.risk_keywords,
-            }
+            {"message": s.commit_message, "risk_keywords": s.risk_keywords}
             for s in history_signals[:10]
         ],
     }
-    parsed = _call_llm(payload, api_key=api_key)
+
+
+def _to_profile(field: FieldNode, parsed: dict[str, Any]) -> SemanticProfile:
     return SemanticProfile(
         field_fqn=field.fqn,
         unit=parsed.get("unit"),
@@ -44,6 +38,28 @@ def profile_field(
         generated_at=datetime.utcnow(),
         source_commit_hash="",
     )
+
+
+def profile_field(
+    field: FieldNode,
+    history_signals: list[HistorySignal] | None = None,
+    api_key: str | None = None,
+) -> SemanticProfile:
+    history_signals = history_signals or []
+    payload = _build_payload(field, history_signals)
+    parsed = _call_llm(payload, api_key=api_key)
+    return _to_profile(field, parsed)
+
+
+async def profile_field_async(
+    field: FieldNode,
+    history_signals: list[HistorySignal] | None = None,
+    api_key: str | None = None,
+) -> SemanticProfile:
+    history_signals = history_signals or []
+    payload = _build_payload(field, history_signals)
+    parsed = await _call_llm_async(payload, api_key=api_key)
+    return _to_profile(field, parsed)
 
 
 def _call_llm(payload: dict[str, Any], api_key: str | None = None) -> dict[str, Any]:
@@ -59,12 +75,28 @@ def _call_llm(payload: dict[str, Any], api_key: str | None = None) -> dict[str, 
             model="claude-3-5-haiku-latest",
             max_tokens=512,
             system=PROFILE_PROMPT,
-            messages=[
-                {
-                    "role": "user",
-                    "content": json.dumps(payload),
-                }
-            ],
+            messages=[{"role": "user", "content": json.dumps(payload)}],
+        )
+        text = message.content[0].text if message.content else "{}"
+        return json.loads(_extract_json(text))
+    except Exception:
+        return _heuristic_profile(payload)
+
+
+async def _call_llm_async(payload: dict[str, Any], api_key: str | None = None) -> dict[str, Any]:
+    key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+    if not key:
+        return _heuristic_profile(payload)
+
+    try:
+        import anthropic
+
+        client = anthropic.AsyncAnthropic(api_key=key)
+        message = await client.messages.create(
+            model="claude-3-5-haiku-latest",
+            max_tokens=512,
+            system=PROFILE_PROMPT,
+            messages=[{"role": "user", "content": json.dumps(payload)}],
         )
         text = message.content[0].text if message.content else "{}"
         return json.loads(_extract_json(text))

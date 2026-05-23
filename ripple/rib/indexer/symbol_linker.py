@@ -17,6 +17,7 @@ Strategy (layered, cheapest first):
 
 from __future__ import annotations
 
+import functools
 import logging
 import re
 from typing import Optional
@@ -45,10 +46,6 @@ _SKIP_IDENTIFIERS: frozenset[str] = frozenset(
         "this",
         "null",
         "void",
-        "error",
-        "message",
-        "status",
-        "code",
         "list",
         "map",
         "set",
@@ -199,18 +196,12 @@ def build_field_index(field_fqns: list[str]) -> dict[str, list[str]]:
 def link_symbol_to_field(
     symbol_id: str,
     field_index: dict[str, list[str]],
+    context_hint: str = "",
 ) -> Optional[str]:
     """Return the best-matching field FQN for a SCIP symbol ID, or None.
 
-    Phase 1 — leaf-name match (implemented):
-      Extract the leaf identifier from the SCIP symbol, normalise it, look
-      up in the field index.  Returns None for generic identifiers or when
-      no field matches.
-
-    Phase 2 — LLM disambiguation (TODO):
-      When multiple fields share the same normalised leaf name, use the
-      symbol's containing class / file path as additional context for an LLM
-      to pick the right endpoint.
+    Phase 1 — leaf-name match: fast, deterministic, O(n).
+    Phase 2 — LLM disambiguation: used when multiple fields share the same leaf name.
     """
     leaf = extract_symbol_leaf(symbol_id)
     if not leaf or len(leaf) < 2:
@@ -225,19 +216,51 @@ def link_symbol_to_field(
         return None
 
     if len(candidates) == 1:
-        logger.debug(
-            "symbol_linker match symbol_leaf=%s → fqn=%s",
-            leaf,
-            candidates[0],
-        )
+        logger.debug("symbol_linker match symbol_leaf=%s → fqn=%s", leaf, candidates[0])
         return candidates[0]
 
-    # Multiple candidates: same leaf name on different endpoints.
-    # Phase-2 (LLM) hook goes here.  For now return first — they are all
-    # plausible usages of fields that share a name.
+    # Multiple candidates — try LLM disambiguation (result is cached per unique combo)
+    chosen = _disambiguate(leaf, tuple(candidates), context_hint)
     logger.debug(
-        "symbol_linker ambiguous symbol_leaf=%s candidates=%d → using first",
-        leaf,
-        len(candidates),
+        "symbol_linker disambiguated symbol_leaf=%s candidates=%d → fqn=%s",
+        leaf, len(candidates), chosen,
     )
+    return chosen
+
+
+@functools.lru_cache(maxsize=2048)
+def _disambiguate(leaf: str, candidates: tuple[str, ...], context_hint: str) -> str:
+    """Pick the most likely field FQN for a leaf name given a tuple of candidates.
+
+    Cached per (leaf, candidates, context_hint) so repeated occurrences of the
+    same identifier in the same file don't trigger extra LLM calls.
+    Falls back to candidates[0] if LLM is unavailable or fails.
+    """
+    import os
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return candidates[0]
+
+    try:
+        import anthropic
+        numbered = "\n".join(f"{i+1}. {fqn}" for i, fqn in enumerate(candidates))
+        prompt = (
+            f"A consumer code file references the identifier `{leaf}`.\n"
+            f"File: {context_hint or 'unknown'}\n\n"
+            f"Which of these producer API field FQNs is most likely referenced?\n"
+            f"{numbered}\n\n"
+            f"Reply with ONLY the number (1-{len(candidates)})."
+        )
+        client = anthropic.Anthropic(api_key=api_key)
+        msg = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=8,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = (msg.content[0].text or "").strip()
+        idx = int(text.split()[0]) - 1
+        if 0 <= idx < len(candidates):
+            return candidates[idx]
+    except Exception:
+        pass
     return candidates[0]

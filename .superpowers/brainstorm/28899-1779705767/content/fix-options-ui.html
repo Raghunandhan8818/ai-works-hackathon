@@ -1,0 +1,140 @@
+<h2>Fix Options Review Screen</h2>
+<p class="subtitle">The most important screen in Ripple — producer PR #42 broke 2 consumers. A human reviews options and picks the approach before any PR is raised.</p>
+
+<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;font-size:11px;margin-bottom:20px">
+
+  <!-- Top bar -->
+  <div style="background:#fff;border-bottom:1px solid #e2e8f0;padding:10px 16px;display:flex;align-items:center;justify-content:space-between">
+    <div style="display:flex;align-items:center;gap:10px">
+      <div style="width:14px;height:14px;background:linear-gradient(135deg,#f97316,#ef4444);border-radius:3px"></div>
+      <span style="font-weight:700;color:#0f172a">Ripple</span>
+      <span style="color:#94a3b8">/</span>
+      <span style="color:#64748b">vets-service</span>
+      <span style="color:#94a3b8">/</span>
+      <span style="color:#0f172a;font-weight:600">PR #42 — Fix Options</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px">
+      <span style="background:#fef9c3;color:#a16207;border-radius:4px;padding:2px 8px;font-size:10px;font-weight:600">⏳ Awaiting approval</span>
+      <span style="color:#94a3b8;font-size:10px">vets-service → ownerPhone removed, petAge int→string</span>
+    </div>
+  </div>
+
+  <div style="padding:16px">
+
+    <!-- Breaking change summary -->
+    <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:10px 14px;margin-bottom:16px;display:flex;gap:16px;align-items:flex-start">
+      <div style="flex:1">
+        <div style="font-weight:700;color:#b91c1c;margin-bottom:4px">Breaking change detected in vets-service PR #42</div>
+        <div style="color:#64748b;font-size:10px">2 field contracts changed · 2 consumers affected · Ripple generated fix options below</div>
+      </div>
+      <a href="#" style="background:#fff;border:1px solid #fecaca;color:#ef4444;border-radius:4px;padding:4px 10px;font-size:10px;white-space:nowrap;text-decoration:none">View PR on GitHub ↗</a>
+    </div>
+
+    <!-- Consumer 1: react-ui -->
+    <div style="margin-bottom:20px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+        <div style="width:8px;height:8px;background:#ef4444;border-radius:50%"></div>
+        <span style="font-weight:700;color:#0f172a">react-ui</span>
+        <span style="background:#fef2f2;color:#b91c1c;border-radius:3px;padding:1px 6px;font-size:9px">2 usages break</span>
+        <span style="color:#94a3b8;font-size:10px">PetCard.tsx:142, ProfileView.tsx:88</span>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
+
+        <!-- Option 1: Graceful deprecation -->
+        <div style="background:#fff;border:2px solid #e2e8f0;border-radius:8px;padding:12px;cursor:pointer;transition:border-color 0.2s" onclick="this.style.borderColor='#3b82f6';this.style.background='#eff6ff';document.querySelectorAll('.apply-btn-1').forEach(b=>b.style.display='block')">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px">
+            <span style="font-weight:700;color:#0f172a;font-size:11px">Option A</span>
+            <span style="background:#f0fdf4;color:#16a34a;border-radius:3px;padding:1px 6px;font-size:9px;font-weight:600">Low risk</span>
+          </div>
+          <div style="font-weight:600;color:#1e40af;margin-bottom:4px;font-size:11px">Graceful deprecation</div>
+          <div style="color:#64748b;font-size:10px;margin-bottom:8px;line-height:1.4">Keep <code style="background:#f1f5f9;padding:0 2px">ownerPhone</code> with null fallback. Add adapter that reads from new <code style="background:#f1f5f9;padding:0 2px">ownerContact.phone</code>. Zero breaking change to react-ui.</div>
+          <!-- Diff preview -->
+          <div style="background:#0f172a;border-radius:4px;padding:8px;font-family:monospace;font-size:9px;margin-bottom:8px;line-height:1.5">
+            <div style="color:#86efac">+ const phone = owner.ownerContact?.phone</div>
+            <div style="color:#86efac">+   ?? owner.ownerPhone ?? '—';</div>
+            <div style="color:#fca5a5">- const phone = owner.ownerPhone;</div>
+          </div>
+          <div style="color:#94a3b8;font-size:9px;margin-bottom:8px">~3 lines · 2 files</div>
+          <button class="apply-btn-1" style="display:none;width:100%;background:#3b82f6;color:#fff;border:none;border-radius:4px;padding:5px;font-size:10px;font-weight:600;cursor:pointer">Apply this fix →</button>
+        </div>
+
+        <!-- Option 2: Hard migration -->
+        <div style="background:#fff;border:2px solid #e2e8f0;border-radius:8px;padding:12px;cursor:pointer" onclick="this.style.borderColor='#3b82f6';this.style.background='#eff6ff'">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px">
+            <span style="font-weight:700;color:#0f172a;font-size:11px">Option B</span>
+            <span style="background:#fef9c3;color:#a16207;border-radius:3px;padding:1px 6px;font-size:9px;font-weight:600">Medium risk</span>
+          </div>
+          <div style="font-weight:600;color:#1e40af;margin-bottom:4px;font-size:11px">Direct migration</div>
+          <div style="color:#64748b;font-size:10px;margin-bottom:8px;line-height:1.4">Update all usages to <code style="background:#f1f5f9;padding:0 2px">ownerContact.phone</code> directly. Cleaner long-term but requires QA on all 2 touch points.</div>
+          <div style="background:#0f172a;border-radius:4px;padding:8px;font-family:monospace;font-size:9px;margin-bottom:8px;line-height:1.5">
+            <div style="color:#86efac">+ const phone = owner.ownerContact.phone;</div>
+            <div style="color:#fca5a5">- const phone = owner.ownerPhone;</div>
+          </div>
+          <div style="color:#94a3b8;font-size:9px;margin-bottom:8px">~2 lines · 2 files</div>
+          <button style="width:100%;background:#e2e8f0;color:#64748b;border:none;border-radius:4px;padding:5px;font-size:10px;font-weight:600;cursor:pointer">Apply this fix →</button>
+        </div>
+
+        <!-- Option 3: Suggest revert -->
+        <div style="background:#fff;border:2px solid #e2e8f0;border-radius:8px;padding:12px;cursor:pointer" onclick="this.style.borderColor='#3b82f6';this.style.background='#eff6ff'">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px">
+            <span style="font-weight:700;color:#0f172a;font-size:11px">Option C</span>
+            <span style="background:#fef2f2;color:#b91c1c;border-radius:3px;padding:1px 6px;font-size:9px;font-weight:600">Block PR</span>
+          </div>
+          <div style="font-weight:600;color:#b91c1c;margin-bottom:4px;font-size:11px">Request revert</div>
+          <div style="color:#64748b;font-size:10px;margin-bottom:8px;line-height:1.4">Post a review blocking this PR. Add a comment explaining consumers aren't ready. Producer should provide a deprecation window first.</div>
+          <div style="background:#fef2f2;border-radius:4px;padding:8px;font-size:9px;margin-bottom:8px;line-height:1.4;color:#b91c1c">
+            "This PR removes ownerPhone without a deprecation window. 2 consumers are not ready. Please keep the old field for ≥1 release."
+          </div>
+          <div style="color:#94a3b8;font-size:9px;margin-bottom:8px">No code change · GitHub review</div>
+          <button style="width:100%;background:#e2e8f0;color:#64748b;border:none;border-radius:4px;padding:5px;font-size:10px;font-weight:600;cursor:pointer">Apply this fix →</button>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Consumer 2: api-gateway -->
+    <div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+        <div style="width:8px;height:8px;background:#ef4444;border-radius:50%"></div>
+        <span style="font-weight:700;color:#0f172a">api-gateway</span>
+        <span style="background:#fef2f2;color:#b91c1c;border-radius:3px;padding:1px 6px;font-size:9px">1 usage breaks</span>
+        <span style="color:#94a3b8;font-size:10px">VetController.java:203</span>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
+        <div style="background:#fff;border:2px solid #e2e8f0;border-radius:8px;padding:12px">
+          <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+            <span style="font-weight:700;color:#0f172a;font-size:11px">Option A</span>
+            <span style="background:#f0fdf4;color:#16a34a;border-radius:3px;padding:1px 6px;font-size:9px;font-weight:600">Low risk</span>
+          </div>
+          <div style="font-weight:600;color:#1e40af;margin-bottom:4px;font-size:11px">Null-safe adapter</div>
+          <div style="color:#64748b;font-size:10px;margin-bottom:8px;line-height:1.4">Wrap the field access with <code style="background:#f1f5f9;padding:0 2px">Optional.ofNullable()</code>. Handles both old and new response shape.</div>
+          <div style="background:#0f172a;border-radius:4px;padding:8px;font-family:monospace;font-size:9px;margin-bottom:8px;line-height:1.5">
+            <div style="color:#86efac">+ String phone = Optional.ofNullable(</div>
+            <div style="color:#86efac">+   vet.getOwnerPhone()).orElse("");</div>
+            <div style="color:#fca5a5">- String phone = vet.getOwnerPhone();</div>
+          </div>
+          <div style="color:#94a3b8;font-size:9px;margin-bottom:8px">~3 lines · 1 file</div>
+          <button style="width:100%;background:#e2e8f0;color:#64748b;border:none;border-radius:4px;padding:5px;font-size:10px;font-weight:600;cursor:pointer">Apply this fix →</button>
+        </div>
+        <div style="background:#f8fafc;border:2px dashed #e2e8f0;border-radius:8px;padding:12px;display:flex;align-items:center;justify-content:center;color:#94a3b8;font-size:10px;text-align:center">
+          Option B<br><span style="font-size:9px">Direct migration<br>available after<br>Option A review</span>
+        </div>
+        <div style="background:#f8fafc;border:2px dashed #e2e8f0;border-radius:8px;padding:12px;display:flex;align-items:center;justify-content:center;color:#94a3b8;font-size:10px;text-align:center">
+          Option C<br><span style="font-size:9px">Block PR<br>available as<br>last resort</span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Bottom action bar -->
+  <div style="background:#fff;border-top:1px solid #e2e8f0;padding:10px 16px;display:flex;align-items:center;justify-content:space-between">
+    <span style="color:#64748b;font-size:10px">Select an approach for each consumer, then raise all fix PRs at once</span>
+    <div style="display:flex;gap:8px">
+      <button style="background:#f1f5f9;color:#64748b;border:1px solid #e2e8f0;border-radius:4px;padding:5px 12px;font-size:10px;cursor:pointer">Dismiss</button>
+      <button style="background:#0f172a;color:#fff;border:none;border-radius:4px;padding:5px 14px;font-size:10px;font-weight:600;cursor:pointer">Raise selected fix PRs →</button>
+    </div>
+  </div>
+</div>

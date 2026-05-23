@@ -1,0 +1,169 @@
+<h2>Multi-Repo Knowledge Graph Pipeline</h2>
+<p class="subtitle">Temporal orchestrates. ADK agents reason. Tree-sitter handles structure. LLMs handle semantics.</p>
+
+<div style="display:grid;grid-template-columns:1fr 2fr;gap:20px">
+
+<!-- Left: Pipeline flow -->
+<div>
+  <h3 style="font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:12px">Index Pipeline (per repo pair)</h3>
+
+  <div style="display:flex;flex-direction:column;gap:0">
+
+    <!-- Trigger -->
+    <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:8px 10px;font-size:10px">
+      <div style="font-weight:700;color:#166534;margin-bottom:2px">⚡ Trigger</div>
+      <div style="color:#15803d">Push to main / manual ingest</div>
+      <div style="color:#64748b;font-size:9px;margin-top:2px">Temporal: IndexServiceWorkflow starts</div>
+    </div>
+    <div style="width:2px;height:12px;background:#e2e8f0;margin:0 auto"></div>
+
+    <!-- Activity 1: Schema Parse -->
+    <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:8px 10px;font-size:10px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px">
+        <div style="font-weight:700;color:#1e40af">1. Schema Parser</div>
+        <span style="background:#dbeafe;color:#1d4ed8;border-radius:3px;padding:1px 5px;font-size:8px">no LLM</span>
+      </div>
+      <div style="color:#1e40af;font-size:9px">OpenAPI → FieldNode contracts</div>
+      <div style="color:#64748b;font-size:9px;margin-top:2px">Protobuf · GraphQL · Avro · .d.ts</div>
+    </div>
+    <div style="width:2px;height:12px;background:#e2e8f0;margin:0 auto"></div>
+
+    <!-- Activity 2: Tree-sitter -->
+    <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:8px 10px;font-size:10px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px">
+        <div style="font-weight:700;color:#1e40af">2. Structural Extractor</div>
+        <span style="background:#dbeafe;color:#1d4ed8;border-radius:3px;padding:1px 5px;font-size:8px">no LLM</span>
+      </div>
+      <div style="color:#1e40af;font-size:9px">Tree-sitter → field usages, imports</div>
+      <div style="color:#64748b;font-size:9px;margin-top:2px">66 languages · returns file+line+snippet</div>
+    </div>
+    <div style="width:2px;height:12px;background:#e2e8f0;margin:0 auto"></div>
+
+    <!-- Activity 3: Parallel LLM enrichment -->
+    <div style="background:#faf5ff;border:1px solid #e9d5ff;border-radius:6px;padding:8px 10px;font-size:10px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px">
+        <div style="font-weight:700;color:#7c3aed">3. ADK ParallelAgent</div>
+        <span style="background:#ede9fe;color:#6d28d9;border-radius:3px;padding:1px 5px;font-size:8px">Haiku · parallel</span>
+      </div>
+      <div style="color:#7c3aed;font-size:9px">Per-field: semantic profile + beliefs</div>
+      <div style="color:#64748b;font-size:9px;margin-top:2px">Reads snippets only · not full files</div>
+    </div>
+    <div style="width:2px;height:12px;background:#e2e8f0;margin:0 auto"></div>
+
+    <!-- Activity 4: Disagreement -->
+    <div style="background:#faf5ff;border:1px solid #e9d5ff;border-radius:6px;padding:8px 10px;font-size:10px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px">
+        <div style="font-weight:700;color:#7c3aed">4. ADK DisagreementAgent</div>
+        <span style="background:#ede9fe;color:#6d28d9;border-radius:3px;padding:1px 5px;font-size:8px">Sonnet</span>
+      </div>
+      <div style="color:#7c3aed;font-size:9px">Contract vs beliefs → disagreements</div>
+      <div style="color:#64748b;font-size:9px;margin-top:2px">Severity · kind · evidence</div>
+    </div>
+    <div style="width:2px;height:12px;background:#e2e8f0;margin:0 auto"></div>
+
+    <!-- Output -->
+    <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:6px;padding:8px 10px;font-size:10px">
+      <div style="font-weight:700;color:#c2410c;margin-bottom:2px">✓ Knowledge Graph Updated</div>
+      <div style="color:#ea580c;font-size:9px">Fields · profiles · beliefs · disagreements</div>
+      <div style="color:#64748b;font-size:9px;margin-top:2px">Ecosystem graph refreshes in dashboard</div>
+    </div>
+  </div>
+</div>
+
+<!-- Right: Detailed agent breakdown -->
+<div>
+  <h3 style="font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:12px">ADK Agent Design — What Each Agent Does</h3>
+
+  <!-- SchemaExtractorAgent -->
+  <div style="background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:12px;margin-bottom:10px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+      <div style="font-weight:700;color:#0f172a;font-size:11px">SchemaExtractorAgent</div>
+      <div style="display:flex;gap:4px">
+        <span style="background:#f0fdf4;color:#16a34a;border-radius:3px;padding:1px 6px;font-size:9px">no LLM</span>
+        <span style="background:#f8fafc;color:#64748b;border-radius:3px;padding:1px 6px;font-size:9px">sequential</span>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:9px">
+      <div>
+        <div style="color:#64748b;margin-bottom:3px;font-weight:600">Tools</div>
+        <div style="color:#374151">find_schema_files(repo)<br>parse_openapi(path)<br>parse_protobuf(path)<br>parse_graphql(path)</div>
+      </div>
+      <div>
+        <div style="color:#64748b;margin-bottom:3px;font-weight:600">Output</div>
+        <div style="color:#374151">FieldNode[] with:<br>name, type, nullable<br>endpoint, transport<br>schema_source_path</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ConsumerDetectorAgent -->
+  <div style="background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:12px;margin-bottom:10px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+      <div style="font-weight:700;color:#0f172a;font-size:11px">ConsumerDetectorAgent</div>
+      <div style="display:flex;gap:4px">
+        <span style="background:#f0fdf4;color:#16a34a;border-radius:3px;padding:1px 6px;font-size:9px">tree-sitter</span>
+        <span style="background:#f8fafc;color:#64748b;border-radius:3px;padding:1px 6px;font-size:9px">parallel per field</span>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:9px">
+      <div>
+        <div style="color:#64748b;margin-bottom:3px;font-weight:600">Tools</div>
+        <div style="color:#374151">grep_field_name(repo, name)<br>read_snippet(file, line, ±5)<br>get_function_context(file, fn)</div>
+      </div>
+      <div>
+        <div style="color:#64748b;margin-bottom:3px;font-weight:600">Output</div>
+        <div style="color:#374151">FieldUsage[] with:<br>file_path, line<br>surrounding_context<br>containing_function</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SemanticProfilerAgent -->
+  <div style="background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:12px;margin-bottom:10px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+      <div style="font-weight:700;color:#0f172a;font-size:11px">SemanticProfilerAgent + BeliefExtractorAgent</div>
+      <div style="display:flex;gap:4px">
+        <span style="background:#faf5ff;color:#7c3aed;border-radius:3px;padding:1px 6px;font-size:9px">Haiku · cheap</span>
+        <span style="background:#f8fafc;color:#64748b;border-radius:3px;padding:1px 6px;font-size:9px">ADK ParallelAgent</span>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:9px">
+      <div>
+        <div style="color:#64748b;margin-bottom:3px;font-weight:600">LLM reads (per field)</div>
+        <div style="color:#374151">• Field declaration + docstring<br>• 10-line snippets per usage<br>• Test assertions (if any)<br>• Commit messages touching field</div>
+      </div>
+      <div>
+        <div style="color:#64748b;margin-bottom:3px;font-weight:600">LLM answers</div>
+        <div style="color:#374151">• unit (cents? dollars? ms?)<br>• domain (payment? medical?)<br>• invariants (always positive?)<br>• consumer belief confidence</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- DisagreementAgent -->
+  <div style="background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:12px;margin-bottom:10px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+      <div style="font-weight:700;color:#0f172a;font-size:11px">DisagreementDetectorAgent</div>
+      <div style="display:flex;gap:4px">
+        <span style="background:#faf5ff;color:#7c3aed;border-radius:3px;padding:1px 6px;font-size:9px">Sonnet · accurate</span>
+        <span style="background:#f8fafc;color:#64748b;border-radius:3px;padding:1px 6px;font-size:9px">ADK LoopAgent</span>
+      </div>
+    </div>
+    <div style="font-size:9px;color:#374151;line-height:1.6">
+      Compares producer contract vs each consumer belief.<br>
+      ADK LoopAgent: reason → verify → assign severity.<br>
+      <span style="color:#ef4444;font-weight:600">UNIT_MISMATCH</span> · <span style="color:#ef4444;font-weight:600">BEHAVIORAL_CHANGE</span> → semantic (needs human interrupt)<br>
+      <span style="color:#f59e0b;font-weight:600">TYPE_CHANGED</span> · <span style="color:#f59e0b;font-weight:600">NULLABLE_CHANGED</span> → mechanical (auto-fix)
+    </div>
+  </div>
+
+  <!-- Incremental re-index -->
+  <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:10px;font-size:9px">
+    <div style="font-weight:700;color:#166534;margin-bottom:3px">⚡ Incremental re-index on push (key for scale)</div>
+    <div style="color:#15803d;line-height:1.6">
+      Git diff → only changed files go through tree-sitter again<br>
+      Only affected fields re-enriched by LLM<br>
+      Temporal workflow: skip to step 2 with diff context<br>
+      Result: PR analysis latency ~30s instead of ~10min full re-index
+    </div>
+  </div>
+</div>
+
+</div>

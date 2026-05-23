@@ -1,0 +1,131 @@
+@import "tailwindcss";
+
+/* ── Design system tokens ── */
+:root {
+  /* Landing (dark) */
+  --landing-bg: #07090F;
+  --landing-text: #F0EDE8;
+  --landing-text-secondary: #94A3B8;
+  --brand: #FF5A1F;
+  --brand-hover: #e84d15;
+  --green: #22C55E;
+  --amber: #F59E0B;
+  --red: #EF4444;
+  --border-dark: rgba(255,255,255,0.08);
+  --card-dark: rgba(255,255,255,0.04);
+
+  /* Dashboard (light) */
+  --dash-bg: #F8F7F4;
+  --dash-sidebar: #FFFFFF;
+  --dash-card: #FFFFFF;
+  --dash-border: #E8E5DF;
+  --dash-text: #111827;
+  --dash-text-secondary: #6B7280;
+
+  /* Status semantic */
+  --status-healthy-text: #065F46;
+  --status-healthy-bg: #ECFDF5;
+  --status-interrupt-text: #92400E;
+  --status-interrupt-bg: #FFFBEB;
+  --status-breaking-text: #9B1C1C;
+  --status-breaking-bg: #FEF2F2;
+  --status-healed-text: #065F46;
+  --status-healed-bg: #ECFDF5;
+}
+
+/* ── Base resets ── */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+/* ── Node pulse animations ── */
+@keyframes pulse-amber {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.4); }
+  50% { box-shadow: 0 0 0 8px rgba(245, 158, 11, 0); }
+}
+
+@keyframes pulse-red {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.5); }
+  50% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
+}
+
+@keyframes pulse-green {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.3); }
+  50% { box-shadow: 0 0 0 6px rgba(34, 197, 94, 0); }
+}
+
+@keyframes flow-dash {
+  to { stroke-dashoffset: -24; }
+}
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(24px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(100%); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes heal-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+.node-pulse-amber {
+  animation: pulse-amber 2s ease-in-out infinite;
+}
+
+.node-pulse-red {
+  animation: pulse-red 1.2s ease-in-out infinite;
+}
+
+.node-pulse-green {
+  animation: pulse-green 3s ease-in-out infinite;
+}
+
+.animate-fade-up {
+  animation: fade-up 0.6s ease-out forwards;
+}
+
+.animate-slide-up {
+  animation: slide-up 0.35s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+/* ── React Flow overrides ── */
+.react-flow__node {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+.react-flow__edge-path {
+  transition: stroke 0.3s ease;
+}
+
+/* Edge animation for breaking */
+.animated-edge {
+  stroke-dasharray: 8 4;
+  animation: flow-dash 0.8s linear infinite;
+}
+
+/* ── Landing typography ── */
+.landing-heading {
+  font-family: var(--font-syne, 'Syne', sans-serif);
+  font-weight: 700;
+}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.1);
+  border-radius: 3px;
+}

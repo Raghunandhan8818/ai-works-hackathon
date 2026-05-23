@@ -17,6 +17,8 @@ async def start_analyze_workflow(request: AnalyzePRRequest) -> AnalyzeWorkflowSt
         "base_branch": request.baseBranch,
         "pr_number": request.prNumber,
         "head_commit": request.headCommit,
+        "producer_service": request.producerService,
+        "github_token": request.githubToken,
     }
 
     handle = await client.start_workflow(

@@ -72,6 +72,9 @@ class FieldUsage(BaseModel):
     expression: str
     surrounding_context: str
     containing_function: str = ""
+    containing_class: str = ""
+    local_var_name: str = ""
+    operations: list[str] = []
     scip_symbol_id: str = ""
 
 
@@ -110,6 +113,11 @@ class ConsumerBelief(BaseModel):
     source_file_hash: str = ""
 
 
+class DisagreementSource(str, Enum):
+    RULES = "RULES"
+    LLM = "LLM"
+
+
 class Disagreement(BaseModel):
     field_fqn: str
     consumer_service: str
@@ -122,6 +130,70 @@ class Disagreement(BaseModel):
     detected_at: datetime
     resolved_at: Optional[datetime] = None
     fix_pr_url: str = ""
+    source: DisagreementSource = DisagreementSource.RULES
+
+
+class DriftEvent(BaseModel):
+    field_fqn: str
+    detected_at: datetime
+    previous_intent: str
+    current_intent: str
+    drift_explanation: str
+    severity: Severity
+    is_breaking: bool = False
+
+
+class CodeClass(BaseModel):
+    service_name: str
+    file_path: str
+    class_name: str
+    docstring: Optional[str] = None
+    superclasses: list[str] = []
+    line_start: int = 0
+    line_end: int = 0
+    language: str = ""
+
+
+class CodeMethod(BaseModel):
+    service_name: str
+    file_path: str
+    class_name: Optional[str] = None
+    method_name: str
+    signature: str = ""
+    docstring: Optional[str] = None
+    line: int = 0
+    language: str = ""
+
+
+class TestEvidence(BaseModel):
+    field_fqn: str
+    service_name: str
+    test_file: str
+    test_method: str
+    assertion_code: str
+    semantic_hint: Optional[str] = None
+
+
+class BusinessContext(BaseModel):
+    field_fqn: str
+    unit: Optional[str] = None
+    domain: str = ""
+    producer_intent: str = ""
+    consumer_guidance: str = ""
+    invariants: list[str] = []
+    confidence: float = 0.0
+    evidence_sources: list[str] = []
+    synthesized_at: datetime
+
+
+class ServiceRecord(BaseModel):
+    name: str
+    repo_url: str = ""
+    language: str = ""
+    role: str = ""          # "producer" | "consumer" | "both"
+    field_count: int = 0
+    consumer_count: int = 0
+    last_indexed_at: Optional[datetime] = None
 
 
 class BlastRadiusEntry(BaseModel):
@@ -189,6 +261,8 @@ class AnalyzePRRequest(BaseModel):
     branch: str
     baseBranch: str
     headCommit: str
+    producerService: str = ""
+    githubToken: str = ""
 
 
 class AnalyzeWorkflowStatus(BaseModel):

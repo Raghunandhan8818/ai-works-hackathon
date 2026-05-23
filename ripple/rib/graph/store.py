@@ -4,14 +4,20 @@ from typing import Optional, Protocol
 
 from ripple.rib.graph.schema import (
     BlastRadius,
+    BusinessContext,
+    CodeClass,
+    CodeMethod,
     ConsumerBelief,
     Disagreement,
+    DriftEvent,
     FieldNode,
     FieldUsage,
     HistorySignal,
     IngestionResult,
     SemanticProfile,
+    ServiceRecord,
     SymbolNode,
+    TestEvidence,
 )
 
 
@@ -57,3 +63,27 @@ class RippleStore(Protocol):
     def get_file_content_hash(self, file_path: str, service_name: str) -> Optional[str]: ...
 
     def upsert_indexed_file(self, service_name: str, file_path: str, content_hash: str) -> None: ...
+
+    def upsert_code_class(self, code_class: CodeClass) -> None: ...
+
+    def upsert_code_method(self, method: CodeMethod) -> None: ...
+
+    def upsert_test_evidence(self, evidence: TestEvidence) -> None: ...
+
+    def upsert_business_context(self, ctx: BusinessContext) -> None: ...
+
+    def get_business_context(self, field_fqn: str) -> Optional[BusinessContext]: ...
+
+    def get_code_methods_for_service(self, service_name: str) -> list[CodeMethod]: ...
+
+    def get_code_classes_for_service(self, service_name: str) -> list[CodeClass]: ...
+
+    def get_test_evidences_for_field(self, field_fqn: str) -> list[TestEvidence]: ...
+
+    def upsert_drift_event(self, event: DriftEvent) -> None: ...
+
+    def get_drift_events(self, field_fqn: str | None = None) -> list[DriftEvent]: ...
+
+    def upsert_service(self, record: ServiceRecord) -> None: ...
+
+    def get_all_services(self) -> list[ServiceRecord]: ...

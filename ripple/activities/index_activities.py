@@ -33,7 +33,7 @@ async def index_producer_activity(
         openapi_path,
     )
     store = get_store()
-    counts = index_producer(Path(workspace), service_name, openapi_path, store)
+    counts = await index_producer(Path(workspace), service_name, openapi_path, store)
     logger.info("activity index_producer done service=%s counts=%s", service_name, counts)
     return counts
 
@@ -42,6 +42,6 @@ async def index_producer_activity(
 async def index_consumer_activity(workspace: str, service_name: str) -> dict[str, int]:
     logger.info("activity index_consumer service=%s workspace=%s", service_name, workspace)
     store = get_store()
-    counts = index_consumer(Path(workspace), service_name, store)
+    counts = await index_consumer(Path(workspace), service_name, store)
     logger.info("activity index_consumer done service=%s counts=%s", service_name, counts)
     return counts

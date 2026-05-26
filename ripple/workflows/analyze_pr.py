@@ -14,11 +14,94 @@ with workflow.unsafe.imports_passed_through():
         assess_consumer_impact_activity,
         parse_pr_diff_activity,
         post_github_review_activity,
+        upsert_pr_disagreements_activity,
     )
     from ripple.workflows.auto_fix_consumer import AutoFixConsumerWorkflow
 
 IO_RETRY = RetryPolicy(maximum_attempts=3, initial_interval=timedelta(seconds=2))
 LLM_RETRY = RetryPolicy(maximum_attempts=2, initial_interval=timedelta(seconds=5))
+
+# Change types that can have multiple valid business-level migrations
+_NEEDS_HUMAN_TYPES = {"BEHAVIORAL_CHANGE", "SEMANTIC_CHANGE", "UNIT_CHANGE"}
+_URGENT_SEVERITIES = {"CRITICAL", "HIGH"}
+
+
+def _build_knowledge_gap_options(fc: dict) -> list[dict]:
+    """Build context-aware mitigation options for a knowledge-gap interrupt."""
+    change_type = fc.get("change_type", "")
+    old_desc = fc.get("old_description", "")
+    new_desc = fc.get("new_description", "")
+    intent = fc.get("semantic_intent", "")
+    field = fc.get("field_name", "field")
+
+    if change_type == "UNIT_CHANGE":
+        # Unit changes: consumers may need to convert OR the producer should accept both
+        return [
+            {
+                "id": "consumers_convert",
+                "label": f"Consumers adapt — convert from old unit",
+                "description": (
+                    f"The new unit ({new_desc}) is the correct standard going forward. "
+                    f"Ripple will raise fix PRs in all consumers to convert values from {old_desc}."
+                ),
+            },
+            {
+                "id": "producer_adapts",
+                "label": "Producer adapts — keep backward-compatible unit",
+                "description": (
+                    f"Revert the unit change in the producer and maintain {old_desc} for backward compatibility. "
+                    f"A versioned endpoint may be cleaner long-term."
+                ),
+            },
+            {
+                "id": "manual",
+                "label": "I'll coordinate with consumers manually",
+                "description": "Dismiss. Log decision to audit trail — no auto-fix triggered.",
+            },
+        ]
+
+    if change_type == "BEHAVIORAL_CHANGE":
+        # Behavioral inversions / logic changes
+        return [
+            {
+                "id": "new_behavior_intentional",
+                "label": "New behavior is intentional — update consumers",
+                "description": (
+                    f"{intent or f'The new behavior of {field} is intentional.'} "
+                    f"Ripple will raise fix PRs in all known consumers to align with the new behavior."
+                ),
+            },
+            {
+                "id": "revert_behavior",
+                "label": "Revert — this change is unintentional",
+                "description": (
+                    f"The behavioral change from '{old_desc[:80]}' to '{new_desc[:80]}' was not intended. "
+                    f"Flag for the producer team to revert before merging."
+                ),
+            },
+            {
+                "id": "manual",
+                "label": "I'll coordinate with consumers manually",
+                "description": "Dismiss. Decision logged to audit trail — no auto-fix triggered.",
+            },
+        ]
+
+    # SEMANTIC_CHANGE and others
+    return [
+        {
+            "id": "confirm_and_fix",
+            "label": "Confirm change — Ripple will fix consumers",
+            "description": (
+                f"{intent or f'The semantic change to {field} is intentional.'} "
+                f"Ripple will scan all known consumers and raise targeted fix PRs."
+            ),
+        },
+        {
+            "id": "manual",
+            "label": "I'll coordinate with consumers manually",
+            "description": "Dismiss. Decision logged to audit trail — no auto-fix triggered.",
+        },
+    ]
 
 
 @workflow.defn(name="AnalyzePRWorkflow")
@@ -48,7 +131,8 @@ class AnalyzePRWorkflow:
         pr_number: int = request["pr_number"]
         head_commit: str = request.get("head_commit", "")
         producer_service: str = request.get("producer_service", "")
-        github_token: str = request.get("github_token", "")
+        import os as _os
+        github_token: str = request.get("github_token", "") or _os.environ.get("RIPPLE_GITHUB_TOKEN") or _os.environ.get("GITHUB_TOKEN", "")
         workflow_run_id = workflow.info().run_id
 
         # ── Step 1: Clone + compute diff ──────────────────────────────────────
@@ -93,13 +177,77 @@ class AnalyzePRWorkflow:
                 for change in field_changes
             ])
             all_impacts = [impact for impacts in impact_results for impact in impacts]
+
+            # ── Step 3.1: Synthesize knowledge-gap interrupts ──────────────────
+            # For BEHAVIORAL_CHANGE / SEMANTIC_CHANGE / UNIT_CHANGE with CRITICAL/HIGH
+            # severity: if the impact assessment found no breaking consumer impacts that
+            # require human decision, the KG may be incomplete. Raise a producer-side
+            # interrupt so the behavioral change doesn't silently ship.
+
+            for i, fc in enumerate(field_changes):
+                if fc.get("change_type") not in _NEEDS_HUMAN_TYPES:
+                    continue
+                if fc.get("severity_hint") not in _URGENT_SEVERITIES:
+                    continue
+
+                field_impacts = impact_results[i]
+                already_has_human_interrupt = any(
+                    imp.get("breaks") and imp.get("requires_human_decision")
+                    for imp in field_impacts
+                )
+                if already_has_human_interrupt:
+                    continue
+
+                # No human-decision impact found — synthesize one on the producer side
+                all_impacts.append({
+                    "consumer_service": producer_service,
+                    "consumer_repo_url": "",
+                    "field_fqn": fc.get("field_fqn", fc.get("field_name", "")),
+                    "file_path": fc.get("file_path", ""),
+                    "line": fc.get("line", 0),
+                    "breaks": True,
+                    "requires_human_decision": True,
+                    "is_test_only": False,
+                    "severity": fc.get("severity_hint", "HIGH"),
+                    "explanation": (
+                        f"{fc['change_type']} in '{fc['field_name']}': "
+                        f"{fc.get('old_description', '')} → {fc.get('new_description', '')}. "
+                        f"Consumer knowledge graph coverage may be incomplete — manual review required."
+                    ),
+                    "human_decision_reason": (
+                        f"'{fc['field_name']}' has a behavioral change that cannot be safely "
+                        f"auto-fixed. {fc.get('semantic_intent', 'Please confirm how all consumers should handle this.')} "
+                        f"Multiple migration strategies may be valid."
+                    ),
+                    "mitigation_options": _build_knowledge_gap_options(fc),
+                    "suggested_fix": "",
+                    "evidence": [
+                        f"Before: {fc.get('old_description', '')}",
+                        f"After: {fc.get('new_description', '')}",
+                    ],
+                })
+
         self._impacts = len(all_impacts)
+
+        # ── Step 3.3: Write breaking impacts to DB as Disagreement records ────────
+        if all_impacts:
+            await workflow.execute_activity(
+                upsert_pr_disagreements_activity,
+                args=[{
+                    "breaking_impacts": [i for i in all_impacts if i.get("breaks")],
+                    "field_changes": field_changes,
+                }],
+                task_queue="rib-io",
+                start_to_close_timeout=timedelta(minutes=2),
+                retry_policy=IO_RETRY,
+            )
 
         # ── Step 3.5: Auto-fix breaking consumer impacts ───────────────────────
         fix_results: list[dict] = []
-        breaking_impacts = [i for i in all_impacts if i.get("breaks")]
+        # Only auto-fix impacts that don't need human decision
+        auto_fix_impacts = [i for i in all_impacts if i.get("breaks") and not i.get("requires_human_decision", False)]
 
-        if breaking_impacts and github_token:
+        if auto_fix_impacts and github_token:
             self._status = "auto_fixing"
 
             # Build producer PR URL for back-reference in fix PR descriptions
@@ -109,9 +257,9 @@ class AnalyzePRWorkflow:
                 if owner_repo_m else ""
             )
 
-            # Group breaking impacts by consumer service
+            # Group auto-fix impacts by consumer service
             consumers_to_fix: dict[str, list[dict]] = {}
-            for impact in breaking_impacts:
+            for impact in auto_fix_impacts:
                 svc = impact["consumer_service"]
                 consumers_to_fix.setdefault(svc, []).append(impact)
 

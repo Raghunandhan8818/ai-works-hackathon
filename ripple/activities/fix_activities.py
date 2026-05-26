@@ -8,6 +8,7 @@ Queue routing:
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -15,6 +16,7 @@ import subprocess
 from pathlib import Path
 from uuid import uuid4
 
+import anthropic
 import httpx
 from temporalio import activity
 
@@ -80,47 +82,262 @@ async def clone_and_branch_activity(payload: dict) -> dict:
     return {"workspace": str(workspace)}
 
 
-# ── Activity 2: Run Claude Code CLI headless ──────────────────────────────────
+_FIX_MODEL = os.environ.get("RIPPLE_FIX_MODEL", "claude-sonnet-4-6")
+_SOURCE_EXTENSIONS = {".js", ".jsx", ".ts", ".tsx", ".py", ".java", ".kt", ".go", ".rb", ".cs"}
+_SKIP_DIRS = {"node_modules", ".git", "target", "build", "dist", "__pycache__", ".gradle", "vendor"}
+
+
+# ── Activity 2: Apply fixes via per-file Claude API calls ─────────────────────
 
 @activity.defn(name="run_claude_code_fix_activity")
 async def run_claude_code_fix_activity(payload: dict) -> dict:
     """
-    Invoke `claude -p <prompt> --dangerously-skip-permissions` in the cloned workspace.
-    Claude Code reads/edits files directly — no scaffolding needed.
+    Fix consumer files one at a time — one focused Claude API call per file.
+    Eliminates the non-determinism of asking Claude to fix 10+ files in one shot.
     """
     workspace: str = payload["workspace"]
     producer_service: str = payload["producer_service"]
     field_changes: list[dict] = payload["field_changes"]
     breaking_impacts: list[dict] = payload["breaking_impacts"]
 
-    prompt = _build_fix_prompt(workspace, producer_service, field_changes, breaking_impacts)
+    # Extract chosen_strategy from the first breaking impact that has one
+    chosen_strategy = ""
+    for impact in breaking_impacts:
+        if impact.get("chosen_strategy"):
+            chosen_strategy = impact["chosen_strategy"]
+            break
+
+    # Old field names to grep for
+    search_terms = list({
+        c.get("old_field_name") or c.get("field_name")
+        for c in field_changes
+        if c.get("old_field_name") or c.get("field_name")
+    })
+
+    # Collect affected files via grep + explicit impact locations
+    affected_files = _find_affected_files(workspace, search_terms)
+    for impact in breaking_impacts:
+        fp = impact.get("file_path", "")
+        if fp:
+            abs_path = Path(workspace) / fp
+            if abs_path.exists():
+                affected_files.setdefault(str(abs_path), fp)
+
+    if not affected_files:
+        logger.warning("run_claude_code_fix_activity no affected files workspace=%s", workspace)
+        return {"success": False, "output": "No files found referencing changed fields"}
+
+    # Build producer change summary once — shared across all per-file calls
+    producer_summary = _build_producer_summary(producer_service, field_changes)
+
+    client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
+    total_files_fixed = 0
+    file_results: list[str] = []
+
+    for abs_path, rel_path in list(affected_files.items())[:20]:
+        try:
+            content = Path(abs_path).read_text(errors="replace")
+        except Exception:
+            continue
+
+        # Find which breaking impacts reference this file
+        file_impacts = [
+            i for i in breaking_impacts
+            if i.get("file_path", "").endswith(rel_path.split("/")[-1])
+        ]
+
+        user_prompt = _build_per_file_prompt(
+            rel_path, content, producer_summary, field_changes, file_impacts, chosen_strategy
+        )
+
+        try:
+            response = client.messages.create(
+                model=_FIX_MODEL,
+                max_tokens=4096,
+                system=_PER_FILE_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": user_prompt}],
+            )
+            raw = response.content[0].text
+        except Exception as exc:
+            logger.error("run_claude_code_fix_activity API error file=%s: %s", rel_path, exc)
+            continue
+
+        applied = _apply_single_file_edits(workspace, rel_path, raw)
+        if applied > 0:
+            total_files_fixed += 1
+            file_results.append(f"{rel_path}: {applied} replacement(s)")
+            logger.info("fixed %s (%d replacements)", rel_path, applied)
+        else:
+            logger.info("no changes needed in %s", rel_path)
 
     logger.info(
-        "run_claude_code_fix_activity workspace=%s impacts=%d prompt_len=%d",
-        workspace, len(breaking_impacts), len(prompt),
+        "run_claude_code_fix_activity done files_fixed=%d/%d",
+        total_files_fixed, len(affected_files),
     )
+    summary = f"Fixed {total_files_fixed}/{len(affected_files)} files: " + ", ".join(file_results)
+    return {"success": total_files_fixed > 0, "output": summary}
 
-    result = subprocess.run(
-        ["claude", "-p", prompt, "--dangerously-skip-permissions"],
-        cwd=workspace,
-        capture_output=True,
-        text=True,
-        timeout=600,
-        env={**os.environ},
-    )
 
-    output = (result.stdout or "") + (result.stderr or "")
-    success = result.returncode == 0
+_PER_FILE_SYSTEM_PROMPT = """\
+You are fixing a single source file to align it with a breaking API contract change in its producer service.
 
-    if not success:
-        logger.error(
-            "run_claude_code_fix_activity failed rc=%d output=%s",
-            result.returncode, output[:500],
+OUTPUT FORMAT — CRITICAL:
+Return ONLY a raw JSON array of search/replace pairs. No prose, no markdown, no explanation.
+
+[
+  {"from": "exact verbatim string from the file", "to": "replacement string"},
+  {"from": "second occurrence needing a different replacement", "to": "replacement string"}
+]
+
+RULES:
+- Each "from" must be an EXACT substring present in the file — copy character-for-character
+- Add one entry per distinct occurrence that needs changing (duplicates need duplicate entries)
+- ONLY rename/update identifiers that are a direct consequence of the listed producer changes
+- Do NOT change UI display labels (e.g. keep the label text "Full Name:", change only the JS key)
+- Do NOT add arithmetic, new logic, or business rules — only field renames and type adjustments
+- If this file needs NO changes, return an empty array: []"""
+
+
+def _build_producer_summary(producer_service: str, field_changes: list[dict]) -> str:
+    """One compact block describing what changed in the producer — shared across all file prompts."""
+    lines = [f"Producer service `{producer_service}` made these breaking API changes:"]
+    for c in field_changes:
+        old = c.get("old_field_name") or c["field_name"]
+        new = c["field_name"]
+        rename = f"`{old}` → `{new}`" if old != new else f"`{old}` (unchanged name)"
+        lines.append(
+            f"  • {rename}  [{c['change_type']}]\n"
+            f"    Before: {c.get('old_description', '—')}\n"
+            f"    After:  {c.get('new_description', '—')}\n"
+            f"    Intent: {c.get('semantic_intent', '—')}"
         )
-    else:
-        logger.info("run_claude_code_fix_activity success output_len=%d", len(output))
+    return "\n".join(lines)
 
-    return {"success": success, "output": output[:3000]}
+
+def _build_per_file_prompt(
+    rel_path: str,
+    content: str,
+    producer_summary: str,
+    field_changes: list[dict],
+    file_impacts: list[dict],
+    chosen_strategy: str = "",
+) -> str:
+    impact_block = ""
+    if file_impacts:
+        impact_lines = "\n".join(
+            f"  • line {i.get('line', '?')}: {i.get('explanation', '')} — suggested fix: {i.get('suggested_fix', '')}"
+            for i in file_impacts
+        )
+        impact_block = f"\nKnown breaking locations in this file:\n{impact_lines}\n"
+
+    prompt = f"""{producer_summary}
+{impact_block}
+Fix this file — `{rel_path}`:
+```
+{content}
+```
+
+Return a JSON array of search/replace pairs for every change needed in this file.
+If no changes are needed, return []."""
+
+    if chosen_strategy:
+        prompt += f"\n\nCHOSEN MIGRATION STRATEGY (the human selected this — apply it exactly):\n{chosen_strategy}\n"
+
+    return prompt
+
+
+def _find_affected_files(workspace: str, search_terms: list[str]) -> dict[str, str]:
+    """Return {{abs_path: rel_path}} for source files containing any search term."""
+    if not search_terms:
+        return {}
+    pattern = "|".join(re.escape(t) for t in search_terms if t)
+    if not pattern:
+        return {}
+
+    include_args = [arg for ext in _SOURCE_EXTENSIONS for arg in ("--include", f"*{ext}")]
+    exclude_args = [arg for d in _SKIP_DIRS for arg in ("--exclude-dir", d)]
+
+    try:
+        result = subprocess.run(
+            ["grep", "-rl", "-E", pattern, *include_args, *exclude_args, workspace],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return {}
+
+    files: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        abs_path = line.strip()
+        if not abs_path:
+            continue
+        try:
+            rel = str(Path(abs_path).relative_to(workspace))
+            files[abs_path] = rel
+        except ValueError:
+            continue
+    return files
+
+
+def _apply_single_file_edits(workspace: str, rel_path: str, raw: str) -> int:
+    """Apply per-file Claude response to one file on disk.
+
+    Claude returns a flat array of {"from": ..., "to": ...} pairs (no "file" wrapper).
+    Also accepts {"content": ...} for full file overwrite as fallback.
+    """
+    target = Path(workspace) / rel_path
+
+    # Handle full-file overwrite format
+    start_brace = raw.find("{")
+    start_bracket = raw.find("[")
+    if start_brace >= 0 and (start_bracket < 0 or start_brace < start_bracket):
+        # Might be a single object — check for "content" key
+        try:
+            obj = json.loads(raw[start_brace: raw.rfind("}") + 1])
+            if "content" in obj:
+                target.write_text(obj["content"])
+                return 1
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    start = raw.find("[")
+    end = raw.rfind("]") + 1
+    if start < 0 or end <= start:
+        logger.warning("_apply_single_file_edits: no JSON array in response for %s", rel_path)
+        return 0
+
+    try:
+        pairs = json.loads(raw[start:end])
+    except json.JSONDecodeError as exc:
+        logger.warning("_apply_single_file_edits parse failed %s: %s", rel_path, exc)
+        return 0
+
+    if not pairs:
+        return 0  # Claude returned [] — file needs no changes
+
+    try:
+        content = target.read_text(errors="replace")
+    except Exception as exc:
+        logger.error("_apply_single_file_edits read failed %s: %s", rel_path, exc)
+        return 0
+
+    changed = False
+    for pair in pairs:
+        if not isinstance(pair, dict):
+            continue
+        from_str = pair.get("from", "")
+        to_str = pair.get("to", "")
+        if not from_str:
+            continue
+        if from_str in content:
+            content = content.replace(from_str, to_str, 1)
+            changed = True
+        else:
+            logger.warning("_apply_single_file_edits 'from' not found in %s: %r", rel_path, from_str[:80])
+
+    if changed:
+        target.write_text(content)
+        return 1
+    return 0
 
 
 def _infer_extensions(workspace: str) -> list[str]:
@@ -319,7 +536,11 @@ async def create_fix_pr_activity(payload: dict) -> dict:
     producer_pr_url: str = payload.get("producer_pr_url", "")
     field_changes: list[dict] = payload["field_changes"]
     breaking_impacts: list[dict] = payload["breaking_impacts"]
-    github_token: str = payload["github_token"]
+    github_token: str = (
+        payload.get("github_token", "")
+        or os.environ.get("RIPPLE_GITHUB_TOKEN")
+        or os.environ.get("GITHUB_TOKEN", "")
+    )
 
     owner_repo = _parse_owner_repo(consumer_repo_url)
     if not owner_repo:

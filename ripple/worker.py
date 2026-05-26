@@ -23,11 +23,19 @@ from ripple.activities.pr_activities import (
     assess_consumer_impact_activity,
     parse_pr_diff_activity,
     post_github_review_activity,
+    upsert_pr_disagreements_activity,
 )
+from ripple.activities.indexing.clone_shared import clone_to_shared_workspace_activity
+from ripple.activities.indexing.code_index_build import code_index_build_activity
+from ripple.activities.indexing.cross_repo_graph_builder import cross_repo_graph_builder_activity
+from ripple.activities.indexing.write_graph import write_graph_to_store_activity
+from ripple.activities.fixing.mechanical_fix import mechanical_fix_activity
+from ripple.activities.fixing.semantic_fix import semantic_fix_activity
 from ripple.logging_config import configure_logging
 from ripple.temporal_client import get_temporal_client
 from ripple.workflows.analyze_pr import AnalyzePRWorkflow
 from ripple.workflows.auto_fix_consumer import AutoFixConsumerWorkflow
+from ripple.workflows.ecosystem_pipeline import EcosystemPipelineWorkflow
 from ripple.workflows.ingest_ecosystem import IngestEcosystemWorkflow
 from ripple.workflows.ingest_service import IngestServiceWorkflow
 
@@ -44,7 +52,13 @@ async def main() -> None:
     worker = Worker(
         client,
         task_queue="rib",
-        workflows=[IngestEcosystemWorkflow, IngestServiceWorkflow, AnalyzePRWorkflow, AutoFixConsumerWorkflow],
+        workflows=[
+            IngestEcosystemWorkflow,
+            IngestServiceWorkflow,
+            EcosystemPipelineWorkflow,
+            AnalyzePRWorkflow,
+            AutoFixConsumerWorkflow,
+        ],
         activities=[
             clone_repo_activity,
             cleanup_workspace_activity,
@@ -60,6 +74,7 @@ async def main() -> None:
         task_queue="rib-io",
         activities=[
             clone_repo_activity,
+            clone_to_shared_workspace_activity,
             cleanup_workspace_activity,
             get_pr_diff_activity,
             ensure_scip_index_activity,
@@ -69,6 +84,8 @@ async def main() -> None:
             commit_push_fix_activity,
             create_fix_pr_activity,
             comment_fix_prs_on_producer_activity,
+            # PR interrupt flow
+            upsert_pr_disagreements_activity,
         ],
     )
 
@@ -79,6 +96,7 @@ async def main() -> None:
             index_producer_activity,
             parse_pr_diff_activity,
             assess_consumer_impact_activity,
+            write_graph_to_store_activity,
         ],
     )
 
@@ -87,7 +105,12 @@ async def main() -> None:
         task_queue="rib-cpu",
         activities=[
             index_consumer_activity,
-            run_claude_code_fix_activity,  # Claude Code CLI runs here
+            run_claude_code_fix_activity,
+            # new pipeline activities
+            code_index_build_activity,
+            cross_repo_graph_builder_activity,
+            mechanical_fix_activity,
+            semantic_fix_activity,
         ],
     )
 

@@ -137,6 +137,9 @@ class Disagreement(BaseModel):
     resolved_at: Optional[datetime] = None
     fix_pr_url: str = ""
     source: DisagreementSource = DisagreementSource.RULES
+    requires_human_decision: bool = False
+    human_decision_reason: str = ""
+    mitigation_options: list[dict] = []  # list of {id, label, description}
 
 
 class DriftEvent(BaseModel):

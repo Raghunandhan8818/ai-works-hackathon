@@ -1,13 +1,12 @@
 'use client'
 
-import { useCallback, useMemo } from 'react'
+import { useCallback, useEffect } from 'react'
 import ReactFlow, {
   useNodesState,
   useEdgesState,
   Node,
   Edge,
   NodeTypes,
-  EdgeTypes,
   Background,
   BackgroundVariant,
   Controls,
@@ -15,7 +14,6 @@ import ReactFlow, {
 } from 'reactflow'
 import 'reactflow/dist/style.css'
 import ServiceNode from './ServiceNode'
-import { graphNodes, graphEdges } from '@/lib/mock-data'
 import { GraphNode, GraphEdge } from '@/lib/types'
 
 const nodeTypes: NodeTypes = {
@@ -86,14 +84,27 @@ function buildEdges(rawEdges: GraphEdge[]): Edge[] {
 
 interface EcosystemGraphProps {
   onNodeSelect: (nodeId: string | null) => void
+  nodes?: GraphNode[]
+  edges?: GraphEdge[]
 }
 
-export default function EcosystemGraph({ onNodeSelect }: EcosystemGraphProps) {
-  const initialNodes = useMemo(() => buildNodes(graphNodes), [])
-  const initialEdges = useMemo(() => buildEdges(graphEdges), [])
+export default function EcosystemGraph({ onNodeSelect, nodes: propNodes, edges: propEdges }: EcosystemGraphProps) {
+  const [nodes, setNodes, onNodesChange] = useNodesState([] as Node[])
+  const [edges, setEdges, onEdgesChange] = useEdgesState([] as Edge[])
 
-  const [nodes, , onNodesChange] = useNodesState(initialNodes)
-  const [edges, , onEdgesChange] = useEdgesState(initialEdges)
+  useEffect(() => {
+    if (propNodes && propNodes.length > 0) {
+      setNodes(buildNodes(propNodes))
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [propNodes])
+
+  useEffect(() => {
+    if (propEdges && propEdges.length > 0) {
+      setEdges(buildEdges(propEdges))
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [propEdges])
 
   const onNodeClick = useCallback(
     (_: React.MouseEvent, node: Node) => {
@@ -106,11 +117,18 @@ export default function EcosystemGraph({ onNodeSelect }: EcosystemGraphProps) {
     onNodeSelect(null)
   }, [onNodeSelect])
 
+  const isLoading = !propNodes || propNodes.length === 0
+
   return (
     <div
-      className="w-full h-full rounded-2xl overflow-hidden"
+      className="w-full h-full rounded-2xl overflow-hidden relative"
       style={{ border: '1px solid #E8E5DF', background: '#FAFAF8' }}
     >
+      {isLoading && (
+        <div className="absolute inset-0 flex items-center justify-center z-10" style={{ background: '#FAFAF8' }}>
+          <span className="text-sm font-mono" style={{ color: '#9CA3AF' }}>Loading ecosystem graph…</span>
+        </div>
+      )}
       <ReactFlow
         nodes={nodes}
         edges={edges}

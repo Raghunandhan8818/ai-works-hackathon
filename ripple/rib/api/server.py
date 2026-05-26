@@ -7,6 +7,8 @@ import os
 from typing import Optional
 
 from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from ripple.ingest import (
     get_ingest_status,
@@ -23,10 +25,28 @@ from ripple.rib.graph.schema import (
     IngestWorkflowStatus,
     ServiceRecord,
 )
+from ripple.temporal_client import get_temporal_client
+from ripple.workflows.ecosystem_pipeline import EcosystemPipelineWorkflow
+from temporalio.common import WorkflowIDConflictPolicy
+
+
+class InterruptResolveRequest(BaseModel):
+    field_fqn: str
+    consumer_service: str
+    option_id: str
+    option_label: str
+    option_description: str = ""
 
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Ripple Intelligence Backend", version="0.2.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/health")
@@ -80,9 +100,114 @@ def list_disagreements(field_fqn: Optional[str] = None):
     return [d.model_dump() for d in items]
 
 
+@app.post("/api/interrupt/resolve")
+async def resolve_interrupt(request: InterruptResolveRequest):
+    """
+    Resolve a human interrupt:
+    - 'manual' or 'investigate' → just mark disagreement resolved
+    - any other option_id → mark resolved + trigger AutoFixConsumerWorkflow with chosen strategy
+    """
+    store = get_store()
+
+    # Find the disagreement to get field change context
+    disagreements = store.get_disagreements_for_field(request.field_fqn)
+    disagreement = next(
+        (d for d in disagreements if d.consumer_service == request.consumer_service and d.resolved_at is None),
+        None,
+    )
+    if not disagreement:
+        raise HTTPException(status_code=404, detail="Active disagreement not found")
+
+    # Mark as resolved
+    store.resolve_disagreement(request.field_fqn, request.consumer_service)
+
+    if request.option_id in ("manual", "investigate"):
+        return {"status": "resolved", "workflow_id": None}
+
+    # Trigger AutoFixConsumerWorkflow with the chosen strategy
+    all_services = store.get_all_services()
+    consumer_svc = next((s for s in all_services if s.name == request.consumer_service), None)
+    consumer_repo_url = consumer_svc.repo_url if consumer_svc else ""
+
+    if not consumer_repo_url:
+        raise HTTPException(status_code=400, detail=f"No repo_url for consumer service {request.consumer_service}")
+
+    producer_service = request.field_fqn.split(".")[0]
+    github_token = os.environ.get("RIPPLE_GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN", "")
+
+    chosen_strategy = f"{request.option_label}: {request.option_description}".strip(": ")
+
+    field_change = {
+        "field_name": request.field_fqn.split(".")[-1],
+        "field_fqn": request.field_fqn,
+        "change_type": disagreement.kind.value,
+        "old_description": disagreement.consumer_assumes,
+        "new_description": disagreement.producer_says,
+        "severity_hint": disagreement.severity.value,
+    }
+    breaking_impact = {
+        "consumer_service": request.consumer_service,
+        "consumer_repo_url": consumer_repo_url,
+        "file_path": "",
+        "line": 0,
+        "breaks": True,
+        "explanation": disagreement.explanation,
+        "suggested_fix": chosen_strategy,
+        "chosen_strategy": chosen_strategy,
+        "evidence": disagreement.evidence,
+    }
+
+    from ripple.workflows.auto_fix_consumer import AutoFixConsumerWorkflow
+    client = await get_temporal_client()
+    workflow_id = f"manual-fix-{request.consumer_service[:20]}-{request.field_fqn[:20]}"
+
+    handle = await client.start_workflow(
+        AutoFixConsumerWorkflow.run,
+        args=[{
+            "consumer_service": request.consumer_service,
+            "consumer_repo_url": consumer_repo_url,
+            "producer_service": producer_service,
+            "producer_pr_url": "",
+            "field_changes": [field_change],
+            "breaking_impacts": [breaking_impact],
+            "github_token": github_token,
+        }],
+        id=workflow_id,
+        task_queue="rib",
+        id_conflict_policy=WorkflowIDConflictPolicy.TERMINATE_EXISTING,
+    )
+
+    return {"status": "fix_triggered", "workflow_id": handle.id}
+
+
 @app.post("/ingest", response_model=IngestWorkflowStatus)
 async def ingest_ecosystem(request: IngestEcosystemRequest):
     return await start_ingest_workflow(request)
+
+
+@app.post("/ingest-pipeline", response_model=IngestWorkflowStatus)
+async def ingest_pipeline(request: IngestEcosystemRequest):
+    """
+    Cross-repo knowledge graph pipeline.
+    Phase 1: clone all repos in parallel into shared workspace.
+    Phase 2: build combined code index (codebase-memory-mcp or codegraph) on shared root.
+    Phase 3: Claude Code headless with MCP tools extracts full knowledge graph.
+    Phase 4: write FieldNodes + ConsumerBeliefs + Disagreements to Postgres.
+    """
+    client = await get_temporal_client()
+    workflow_id = f"pipeline-{request.tenant_id}-ecosystem"
+    handle = await client.start_workflow(
+        EcosystemPipelineWorkflow.run,
+        request.model_dump(mode="json"),
+        id=workflow_id,
+        task_queue="rib",
+        id_conflict_policy=WorkflowIDConflictPolicy.TERMINATE_EXISTING,
+    )
+    return IngestWorkflowStatus(
+        workflow_id=handle.id,
+        run_id=handle.first_execution_run_id,
+        status="running",
+    )
 
 
 @app.post("/ingest/legacy", response_model=IngestWorkflowStatus)
@@ -147,6 +272,10 @@ async def github_webhook(
         store = get_store()
         producer_service = _find_service_by_repo(store, repo["clone_url"]) or ""
 
+        github_token = (
+            os.environ.get("RIPPLE_GITHUB_TOKEN")
+            or os.environ.get("GITHUB_TOKEN", "")
+        )
         analyze_request = AnalyzePRRequest(
             repo=repo_full_name,
             prNumber=pr["number"],
@@ -154,7 +283,7 @@ async def github_webhook(
             baseBranch=pr["base"]["ref"],
             headCommit=pr["head"]["sha"],
             producerService=producer_service,
-            githubToken=os.environ.get("RIPPLE_GITHUB_TOKEN", ""),
+            githubToken=github_token,
         )
 
         logger.info(

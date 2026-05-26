@@ -116,6 +116,9 @@ CREATE TABLE IF NOT EXISTS disagreements (
 );
 
 ALTER TABLE disagreements ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'RULES';
+ALTER TABLE disagreements ADD COLUMN IF NOT EXISTS requires_human_decision BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE disagreements ADD COLUMN IF NOT EXISTS human_decision_reason TEXT NOT NULL DEFAULT '';
+ALTER TABLE disagreements ADD COLUMN IF NOT EXISTS mitigation_options_json JSONB NOT NULL DEFAULT '[]'::jsonb;
 
 CREATE TABLE IF NOT EXISTS indexed_files (
     service_name TEXT NOT NULL,

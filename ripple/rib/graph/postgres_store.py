@@ -271,10 +271,14 @@ class PostgresStore:
                 """
                 INSERT INTO disagreements (
                     field_fqn, consumer_service, kind, producer_says, consumer_assumes,
-                    severity, evidence_json, explanation, detected_at, resolved_at, fix_pr_url, source
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s)
+                    severity, evidence_json, explanation, detected_at, resolved_at, fix_pr_url, source,
+                    requires_human_decision, human_decision_reason, mitigation_options_json
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
                 ON CONFLICT (field_fqn, consumer_service, kind)
-                WHERE resolved_at IS NULL DO NOTHING
+                WHERE resolved_at IS NULL DO UPDATE SET
+                    mitigation_options_json = EXCLUDED.mitigation_options_json,
+                    requires_human_decision = EXCLUDED.requires_human_decision,
+                    human_decision_reason = EXCLUDED.human_decision_reason
                 """,
                 (
                     disagreement.field_fqn,
@@ -289,6 +293,9 @@ class PostgresStore:
                     disagreement.resolved_at,
                     disagreement.fix_pr_url,
                     disagreement.source.value,
+                    disagreement.requires_human_decision,
+                    disagreement.human_decision_reason,
+                    json.dumps(disagreement.mitigation_options),
                 ),
             )
             conn.commit()
@@ -643,7 +650,23 @@ class PostgresStore:
             resolved_at=row["resolved_at"],
             fix_pr_url=row["fix_pr_url"] or "",
             source=DisagreementSource(row.get("source") or "RULES"),
+            requires_human_decision=bool(row.get("requires_human_decision") or False),
+            human_decision_reason=row.get("human_decision_reason") or "",
+            mitigation_options=_json_list(row.get("mitigation_options_json")),
         )
+
+    def resolve_disagreement(self, field_fqn: str, consumer_service: str) -> None:
+        """Mark a disagreement as resolved (human handled it)."""
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE disagreements
+                SET resolved_at = %s
+                WHERE field_fqn = %s AND consumer_service = %s AND resolved_at IS NULL
+                """,
+                (datetime.now(timezone.utc), field_fqn, consumer_service),
+            )
+            conn.commit()
 
     def upsert_code_class(self, code_class: CodeClass) -> None:
         with self._connect() as conn:

@@ -39,7 +39,9 @@ export interface Interrupt {
   context: string
   options: InterruptOption[]
   sourcePR: string
-  sourcePRNumber: number
+  sourcePRNumber?: number
+  producerSays?: string
+  consumerAssumes?: string
   createdAt: string
   timeAgo: string
 }

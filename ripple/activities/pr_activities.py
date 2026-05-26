@@ -19,7 +19,14 @@ from temporalio import activity
 
 from ripple.rib.enricher.llm_disagreement_detector import detect_llm_disagreements
 from ripple.rib.graph.factory import get_store
-from ripple.rib.graph.schema import ConsumerBelief, FieldNode
+from ripple.rib.graph.schema import (
+    ConsumerBelief,
+    Disagreement,
+    DisagreementKind,
+    DisagreementSource,
+    FieldNode,
+    Severity,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +188,18 @@ Key reasoning rules:
 - Test-only usages (in test files): flag separately, do NOT mark breaks=true for test-only impacts
   unless the test asserts incorrect behavior that will now fail
 
+Set requires_human_decision = true ONLY when:
+- Unit interpretation is ambiguous (e.g. cents vs dollars, ms vs seconds) and there are multiple valid migration paths
+- Multiple valid business-level migration strategies exist and the correct one requires product/domain knowledge
+- The correct mapping cannot be determined from code alone
+
+Set requires_human_decision = false for:
+- Mechanical renames, null-checks, type widening, structural changes with one obvious correct fix
+
+When requires_human_decision = false, set mitigation_options = [].
+When requires_human_decision = true, provide 2-3 concrete business-level options (NOT "I'll fix manually" — the frontend adds that).
+Options should be decisions like "Divide by 100 at read time" vs "Update billing to expect decimals".
+
 Return a JSON array of impacts (one per consumer location that breaks):
 [
   {
@@ -192,7 +211,13 @@ Return a JSON array of impacts (one per consumer location that breaks):
     "severity": "CRITICAL | HIGH | MEDIUM | LOW",
     "explanation": "<one sentence: exactly why this usage breaks>",
     "suggested_fix": "<concrete code change the consumer team should make>",
-    "evidence": ["<usage snippet that proves this breaks>"]
+    "evidence": ["<usage snippet that proves this breaks>"],
+    "requires_human_decision": true | false,
+    "human_decision_reason": "<why this needs human input — what business question can't be resolved from code alone>",
+    "mitigation_options": [
+      {"id": "option_a", "label": "Short option label", "description": "What Ripple will do if this is chosen"},
+      ...
+    ]
   }
 ]
 
@@ -302,6 +327,18 @@ async def assess_consumer_impact_activity(payload: dict) -> list[dict]:
         if not usages_to_assess:
             continue
 
+        # Deduplicate by file: keep one representative usage per file so the LLM
+        # sees every affected file, not just the first 8 raw usages (which may all
+        # be from the same file when one file has many occurrences).
+        seen_files: set[str] = set()
+        representative_usages = []
+        for u in usages_to_assess:
+            if u.file_path not in seen_files:
+                representative_usages.append(u)
+                seen_files.add(u.file_path)
+        # Cap at 20 unique files to stay within LLM context budget
+        representative_usages = representative_usages[:20]
+
         # Build a change-aware prompt section
         change_context = (
             f"FIELD CHANGE IN THIS PR:\n"
@@ -317,8 +354,8 @@ async def assess_consumer_impact_activity(payload: dict) -> list[dict]:
             intent_section = f"\nSEMANTIC INTENT (what consumers must update): {field_change['semantic_intent']}"
 
         prod_label = "PRODUCTION" if prod_usages else "TEST-ONLY (no production usages found)"
-        usage_lines = [f"Consumer usages ({prod_label}):"]
-        for u in usages_to_assess[:8]:
+        usage_lines = [f"Consumer usages ({prod_label}, one representative per file, {len(seen_files)} files total):"]
+        for u in representative_usages:
             line_text = f"  {u.file_path}:{u.line}  {u.expression[:120]}"
             if u.local_var_name:
                 line_text += f"  [var={u.local_var_name}]"
@@ -411,6 +448,17 @@ def _normalise_impact(
         "explanation": str(impact.get("explanation", ""))[:500],
         "suggested_fix": str(impact.get("suggested_fix", ""))[:1000],
         "evidence": [str(e)[:300] for e in impact.get("evidence", [])[:5]],
+        "requires_human_decision": bool(impact.get("requires_human_decision", False)),
+        "human_decision_reason": str(impact.get("human_decision_reason", ""))[:500],
+        "mitigation_options": [
+            {
+                "id": str(opt.get("id", f"opt_{i}"))[:50],
+                "label": str(opt.get("label", ""))[:200],
+                "description": str(opt.get("description", ""))[:500],
+            }
+            for i, opt in enumerate(impact.get("mitigation_options", [])[:3])
+            if isinstance(opt, dict)
+        ],
     }
 
 
@@ -497,6 +545,112 @@ async def post_github_review_activity(payload: dict) -> dict:
     review_url = result.get("html_url", "")
     logger.info("post_github_review_activity posted url=%s", review_url)
     return {"url": review_url, "success": True}
+
+
+@activity.defn(name="upsert_pr_disagreements_activity")
+async def upsert_pr_disagreements_activity(payload: dict) -> int:
+    """
+    Write breaking impacts from PR analysis as Disagreement records in the DB.
+    Called by AnalyzePRWorkflow after impact assessment.
+    Returns the count of disagreements written.
+    """
+    breaking_impacts: list[dict] = payload["breaking_impacts"]
+    field_changes: list[dict] = payload["field_changes"]
+
+    # Build a lookup: field_fqn -> field_change (for old/new descriptions)
+    change_by_fqn: dict[str, dict] = {}
+    for fc in field_changes:
+        change_by_fqn[fc.get("field_fqn", "")] = fc
+
+    # Map change_type -> DisagreementKind
+    CHANGE_TYPE_TO_KIND = {
+        "UNIT_CHANGE": "UNIT_MISMATCH",
+        "TYPE_CHANGE": "TYPE_CHANGED",
+        "NULLABLE_CHANGE": "NULLABLE_CHANGED",
+        "ENUM_CHANGE": "ENUM_VALUE_CHANGED",
+        "REMOVED": "FIELD_REMOVED",
+        "ADDED": "NEW_REQUIRED_FIELD",
+        "ANNOTATION_CHANGE": "ANNOTATION_CHANGE",
+        "STRUCTURE_CHANGE": "STRUCTURE_CHANGE",
+        "BEHAVIORAL_CHANGE": "BEHAVIORAL_CHANGE",
+        "SEMANTIC_CHANGE": "SEMANTIC_INTENT_MISMATCH",
+    }
+
+    store = get_store()
+    written = 0
+    now = datetime.now(timezone.utc)
+
+    for impact in breaking_impacts:
+        if not impact.get("breaks"):
+            continue
+
+        consumer_service = impact.get("consumer_service", "")
+        if not consumer_service:
+            continue
+
+        # Find the field change for this impact.
+        # 1. Prefer explicit field_fqn on the impact (knowledge-gap synthetics carry this).
+        # 2. Match by file_path for LLM impacts.
+        # 3. Last resort: first field change.
+        field_fqn = impact.get("field_fqn", "")
+        fc = change_by_fqn.get(field_fqn) if field_fqn else None
+
+        if not fc:
+            impact_file = impact.get("file_path", "")
+            for fqn, change in change_by_fqn.items():
+                if impact_file and change.get("file_path", "") == impact_file:
+                    field_fqn, fc = fqn, change
+                    break
+
+        if not fc:
+            for fqn, change in change_by_fqn.items():
+                field_fqn, fc = fqn, change
+                break
+
+        if not field_fqn or not fc:
+            continue
+
+        change_type = fc.get("change_type", "SEMANTIC_CHANGE") if fc else "SEMANTIC_CHANGE"
+        kind_str = CHANGE_TYPE_TO_KIND.get(change_type, "SEMANTIC_INTENT_MISMATCH")
+
+        try:
+            kind = DisagreementKind(kind_str)
+        except ValueError:
+            kind = DisagreementKind.SEMANTIC_INTENT_MISMATCH
+
+        severity_map = {
+            "CRITICAL": Severity.CRITICAL,
+            "HIGH": Severity.HIGH,
+            "MEDIUM": Severity.MEDIUM,
+            "LOW": Severity.LOW,
+        }
+        severity = severity_map.get(impact.get("severity", "HIGH"), Severity.HIGH)
+
+        producer_says = fc.get("new_description", "") if fc else ""
+        consumer_assumes = fc.get("old_description", "") if fc else ""
+
+        disagreement = Disagreement(
+            field_fqn=field_fqn,
+            consumer_service=consumer_service,
+            kind=kind,
+            producer_says=producer_says,
+            consumer_assumes=consumer_assumes,
+            severity=severity,
+            evidence=impact.get("evidence", []),
+            explanation=impact.get("explanation", ""),
+            detected_at=now,
+            resolved_at=None,
+            fix_pr_url="",
+            source=DisagreementSource.LLM,
+            requires_human_decision=impact.get("requires_human_decision", False),
+            human_decision_reason=impact.get("human_decision_reason", ""),
+            mitigation_options=impact.get("mitigation_options", []),
+        )
+
+        store.upsert_disagreement(disagreement)
+        written += 1
+
+    return written
 
 
 def _parse_owner_repo(repo_url: str) -> Optional[str]:

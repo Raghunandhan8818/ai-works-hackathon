@@ -382,6 +382,18 @@ class PostgresStore:
             ).fetchall()
         return [self._row_to_disagreement(row) for row in rows]
 
+    def get_all_disagreements(self, limit: int = 200) -> list[Disagreement]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM disagreements
+                ORDER BY COALESCE(resolved_at, detected_at) DESC
+                LIMIT %s
+                """,
+                (limit,),
+            ).fetchall()
+        return [self._row_to_disagreement(row) for row in rows]
+
     def get_disagreements_for_field(self, field_fqn: str) -> list[Disagreement]:
         with self._connect() as conn:
             rows = conn.execute(

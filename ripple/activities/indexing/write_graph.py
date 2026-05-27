@@ -112,6 +112,10 @@ def _parse_field(raw: dict) -> FieldNode:
     except ValueError:
         transport = TransportKind.REST
 
+    constraints = [
+        {**c, "source": c.get("source", "openapi")} if isinstance(c, dict) else c
+        for c in raw.get("constraints", [])
+    ]
     return FieldNode(
         fqn=raw["fqn"],
         name=raw["name"],
@@ -122,7 +126,7 @@ def _parse_field(raw: dict) -> FieldNode:
         declared_type=raw.get("declared_type", "string"),
         nullable=bool(raw.get("nullable", False)),
         deprecated=bool(raw.get("deprecated", False)),
-        constraints=raw.get("constraints", []),
+        constraints=constraints,
     )
 
 

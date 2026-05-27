@@ -28,6 +28,7 @@ with workflow.unsafe.imports_passed_through():
         run_claude_code_fix_activity,
     )
     from ripple.activities.git_activities import cleanup_workspace_activity
+    from ripple.activities.pr_activities import record_fix_pr_activity
 
 IO_RETRY = RetryPolicy(maximum_attempts=3, initial_interval=timedelta(seconds=2))
 NO_RETRY = RetryPolicy(maximum_attempts=1)
@@ -130,9 +131,29 @@ class AutoFixConsumerWorkflow:
                 retry_policy=IO_RETRY,
             )
 
+            pr_url = pr_result.get("pr_url", "")
+            if pr_url:
+                field_fqns = list({
+                    impact.get("field_fqn", "")
+                    for impact in breaking_impacts
+                    if impact.get("field_fqn")
+                })
+                if field_fqns:
+                    await workflow.execute_activity(
+                        record_fix_pr_activity,
+                        args=[{
+                            "pr_url": pr_url,
+                            "consumer_service": consumer_service,
+                            "field_fqns": field_fqns,
+                        }],
+                        task_queue="rib-io",
+                        start_to_close_timeout=timedelta(minutes=2),
+                        retry_policy=IO_RETRY,
+                    )
+
             return {
                 "consumer_service": consumer_service,
-                "pr_url": pr_result.get("pr_url", ""),
+                "pr_url": pr_url,
                 "success": pr_result.get("success", False),
                 "error": pr_result.get("error", ""),
             }

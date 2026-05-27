@@ -69,6 +69,7 @@ export const api = {
     get<ApiDisagreement[]>(
       fieldFqn ? `/disagreements?field_fqn=${encodeURIComponent(fieldFqn)}` : '/disagreements'
     ),
+  allDisagreements: () => get<ApiDisagreement[]>('/disagreements/all'),
   resolveInterrupt: (payload: {
     field_fqn: string
     consumer_service: string

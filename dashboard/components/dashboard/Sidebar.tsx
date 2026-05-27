@@ -1,9 +1,11 @@
 'use client'
 
 import Link from 'next/link'
+import { useEffect, useState } from 'react'
 import { usePathname } from 'next/navigation'
+import { api } from '@/lib/api'
 
-const navItems = [
+const baseNavItems = [
   {
     href: '/dashboard',
     label: 'Ecosystem',
@@ -16,6 +18,7 @@ const navItems = [
       </svg>
     ),
     exact: true,
+    key: 'ecosystem',
   },
   {
     href: '/dashboard/interrupts',
@@ -26,7 +29,7 @@ const navItems = [
         <path d="M9 6v4M9 12v.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
       </svg>
     ),
-    badge: '1',
+    key: 'interrupts',
   },
   {
     href: '/dashboard/activity',
@@ -37,6 +40,7 @@ const navItems = [
         <path d="M9 5v4l2.5 2.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
       </svg>
     ),
+    key: 'activity',
   },
   {
     href: '/dashboard/fields',
@@ -48,6 +52,7 @@ const navItems = [
         <path d="M3 9v4c0 1.1 2.7 2 6 2s6-.9 6-2V9" stroke="currentColor" strokeWidth="1.4" />
       </svg>
     ),
+    key: 'fields',
   },
   {
     href: '/dashboard/settings',
@@ -63,11 +68,22 @@ const navItems = [
         />
       </svg>
     ),
+    key: 'settings',
   },
 ]
 
 export default function Sidebar() {
   const pathname = usePathname()
+  const [activeInterruptCount, setActiveInterruptCount] = useState<number | null>(null)
+
+  useEffect(() => {
+    api.disagreements()
+      .then((d) => {
+        const count = d.filter((x) => x.requires_human_decision && !x.resolved_at).length
+        setActiveInterruptCount(count)
+      })
+      .catch(() => { /* backend not reachable */ })
+  }, [])
 
   const isActive = (href: string, exact?: boolean) => {
     if (exact) return pathname === href
@@ -104,8 +120,11 @@ export default function Sidebar() {
 
       {/* Nav */}
       <nav className="flex-1 px-3 py-4 space-y-0.5">
-        {navItems.map((item) => {
+        {baseNavItems.map((item) => {
           const active = isActive(item.href, item.exact)
+          const badge = item.key === 'interrupts' && activeInterruptCount != null && activeInterruptCount > 0
+            ? String(activeInterruptCount)
+            : null
           return (
             <Link
               key={item.href}
@@ -128,12 +147,12 @@ export default function Sidebar() {
               >
                 {item.label}
               </span>
-              {item.badge && (
+              {badge && (
                 <span
                   className="text-xs font-bold w-5 h-5 rounded-full flex items-center justify-center"
                   style={{ background: '#F59E0B', color: '#FFFFFF' }}
                 >
-                  {item.badge}
+                  {badge}
                 </span>
               )}
             </Link>

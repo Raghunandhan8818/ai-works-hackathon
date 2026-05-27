@@ -23,6 +23,7 @@ from ripple.activities.pr_activities import (
     assess_consumer_impact_activity,
     parse_pr_diff_activity,
     post_github_review_activity,
+    record_fix_pr_activity,
     upsert_pr_disagreements_activity,
 )
 from ripple.activities.indexing.clone_shared import clone_to_shared_workspace_activity
@@ -86,6 +87,7 @@ async def main() -> None:
             comment_fix_prs_on_producer_activity,
             # PR interrupt flow
             upsert_pr_disagreements_activity,
+            record_fix_pr_activity,
         ],
     )
 

@@ -7,6 +7,8 @@ from ripple.rib.graph.schema import (
     ServiceRole,
     ServiceSpec,
 )
+from datetime import timedelta
+
 from temporalio.common import WorkflowIDConflictPolicy
 
 from ripple.temporal_client import get_temporal_client
@@ -39,6 +41,7 @@ async def start_ingest_workflow(
         id=workflow_id,
         task_queue="rib",
         id_conflict_policy=WorkflowIDConflictPolicy.TERMINATE_EXISTING,
+        task_timeout=timedelta(seconds=60),
     )
     return IngestWorkflowStatus(
         workflow_id=handle.id,

@@ -141,6 +141,8 @@ export const graphEdges: GraphEdge[] = [
 export const interrupts: Interrupt[] = [
   {
     id: 'interrupt-1',
+    field_fqn: 'vets-service.consultationFee',
+    consumer_service: 'api-gateway',
     service: 'api-gateway',
     field: 'consultationFee',
     question: 'How should api-gateway handle existing consultationFee values?',

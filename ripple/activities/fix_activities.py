@@ -107,12 +107,22 @@ async def run_claude_code_fix_activity(payload: dict) -> dict:
             chosen_strategy = impact["chosen_strategy"]
             break
 
-    # Old field names to grep for
+    # Build search terms: field names + endpoint path segments (skip bare HTTP status codes)
+    _STATUS_CODE_RE = re.compile(r"^\d{3}$")
     search_terms = list({
-        c.get("old_field_name") or c.get("field_name")
-        for c in field_changes
-        if c.get("old_field_name") or c.get("field_name")
+        t for t in (
+            c.get("old_field_name") or c.get("field_name")
+            for c in field_changes
+            if c.get("old_field_name") or c.get("field_name")
+        )
+        if t and not _STATUS_CODE_RE.match(t)
     })
+    # Also add endpoint path segments so behavioral-change interrupts find the right files
+    for c in field_changes:
+        ep = c.get("endpoint_path", "")
+        for segment in re.split(r"[/\-_]", ep):
+            if len(segment) > 3 and not _STATUS_CODE_RE.match(segment):
+                search_terms.append(segment)
 
     # Collect affected files via grep + explicit impact locations
     affected_files = _find_affected_files(workspace, search_terms)
@@ -192,10 +202,13 @@ Return ONLY a raw JSON array of search/replace pairs. No prose, no markdown, no 
 RULES:
 - Each "from" must be an EXACT substring present in the file — copy character-for-character
 - Add one entry per distinct occurrence that needs changing (duplicates need duplicate entries)
-- ONLY rename/update identifiers that are a direct consequence of the listed producer changes
+- For FIELD_REMOVED / FIELD_RENAMED changes: rename/update identifiers that reference the old field
+- For BEHAVIORAL_CHANGE / SEMANTIC_UNIT_CHANGE: update API call parameters, response handling, or
+  display logic that is directly affected by the described behavior change. Apply the CHOSEN STRATEGY
+  if one is provided — that is the human-approved migration path.
 - Do NOT change UI display labels (e.g. keep the label text "Full Name:", change only the JS key)
-- Do NOT add arithmetic, new logic, or business rules — only field renames and type adjustments
-- If this file needs NO changes, return an empty array: []"""
+- Do NOT add new business logic beyond what the chosen strategy explicitly describes
+- If this file needs NO changes (it does not reference the changed endpoint or field), return: []"""
 
 
 def _build_producer_summary(producer_service: str, field_changes: list[dict]) -> str:
@@ -205,8 +218,11 @@ def _build_producer_summary(producer_service: str, field_changes: list[dict]) ->
         old = c.get("old_field_name") or c["field_name"]
         new = c["field_name"]
         rename = f"`{old}` → `{new}`" if old != new else f"`{old}` (unchanged name)"
+        ep = c.get("endpoint_path", "")
+        endpoint_note = f"  Endpoint: {ep}\n" if ep else ""
         lines.append(
             f"  • {rename}  [{c['change_type']}]\n"
+            f"{endpoint_note}"
             f"    Before: {c.get('old_description', '—')}\n"
             f"    After:  {c.get('new_description', '—')}\n"
             f"    Intent: {c.get('semantic_intent', '—')}"

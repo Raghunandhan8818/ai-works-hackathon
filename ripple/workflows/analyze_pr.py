@@ -35,53 +35,51 @@ def _build_knowledge_gap_options(fc: dict) -> list[dict]:
     field = fc.get("field_name", "field")
 
     if change_type == "UNIT_CHANGE":
-        # Unit changes: consumers may need to convert OR the producer should accept both
         return [
             {
                 "id": "consumers_convert",
-                "label": f"Consumers adapt — convert from old unit",
+                "label": "Consumers should adapt to the new format",
                 "description": (
-                    f"The new unit ({new_desc}) is the correct standard going forward. "
-                    f"Ripple will raise fix PRs in all consumers to convert values from {old_desc}."
+                    f"{intent or f'Consumers must update their code to handle {new_desc} instead of {old_desc}.'} "
+                    f"Ripple will raise fix PRs in all known consumers automatically."
                 ),
             },
             {
-                "id": "producer_adapts",
-                "label": "Producer adapts — keep backward-compatible unit",
+                "id": "producer_compat",
+                "label": "Keep backward-compatibility in the producer",
                 "description": (
-                    f"Revert the unit change in the producer and maintain {old_desc} for backward compatibility. "
-                    f"A versioned endpoint may be cleaner long-term."
+                    f"Support both {old_desc} and {new_desc} at the API boundary so consumers don't need to change. "
+                    f"No consumer fix PRs will be raised — your team handles the producer-side adapter."
                 ),
             },
             {
                 "id": "manual",
-                "label": "I'll coordinate with consumers manually",
-                "description": "Dismiss. Log decision to audit trail — no auto-fix triggered.",
+                "label": "I'll take care of this",
+                "description": "Dismiss. Decision logged to audit trail — no auto-fix triggered.",
             },
         ]
 
     if change_type == "BEHAVIORAL_CHANGE":
-        # Behavioral inversions / logic changes
         return [
             {
                 "id": "new_behavior_intentional",
-                "label": "New behavior is intentional — update consumers",
+                "label": "New behavior is intentional — fix consumers",
                 "description": (
-                    f"{intent or f'The new behavior of {field} is intentional.'} "
-                    f"Ripple will raise fix PRs in all known consumers to align with the new behavior."
+                    f"{intent or f'Consumers must update their logic to match the new behavior of {field}.'} "
+                    f"Ripple will raise fix PRs in all known consumers automatically."
                 ),
             },
             {
-                "id": "revert_behavior",
-                "label": "Revert — this change is unintentional",
+                "id": "producer_compat",
+                "label": "Keep backward-compatibility in the producer",
                 "description": (
-                    f"The behavioral change from '{old_desc[:80]}' to '{new_desc[:80]}' was not intended. "
-                    f"Flag for the producer team to revert before merging."
+                    f"Reintroduce the old behavior as a supported code path in the producer while consumers migrate. "
+                    f"No consumer fix PRs will be raised — your team handles the producer-side change."
                 ),
             },
             {
                 "id": "manual",
-                "label": "I'll coordinate with consumers manually",
+                "label": "I'll take care of this",
                 "description": "Dismiss. Decision logged to audit trail — no auto-fix triggered.",
             },
         ]
@@ -90,15 +88,15 @@ def _build_knowledge_gap_options(fc: dict) -> list[dict]:
     return [
         {
             "id": "confirm_and_fix",
-            "label": "Confirm change — Ripple will fix consumers",
+            "label": "This change is intentional — fix consumers",
             "description": (
-                f"{intent or f'The semantic change to {field} is intentional.'} "
+                f"{intent or f'The change to {field} is intentional.'} "
                 f"Ripple will scan all known consumers and raise targeted fix PRs."
             ),
         },
         {
             "id": "manual",
-            "label": "I'll coordinate with consumers manually",
+            "label": "I'll take care of this",
             "description": "Dismiss. Decision logged to audit trail — no auto-fix triggered.",
         },
     ]
@@ -210,9 +208,7 @@ class AnalyzePRWorkflow:
                     "is_test_only": False,
                     "severity": fc.get("severity_hint", "HIGH"),
                     "explanation": (
-                        f"{fc['change_type']} in '{fc['field_name']}': "
-                        f"{fc.get('old_description', '')} → {fc.get('new_description', '')}. "
-                        f"Consumer knowledge graph coverage may be incomplete — manual review required."
+                        f"{fc.get('semantic_intent') or (fc.get('old_description', '') + ' → ' + fc.get('new_description', ''))}"
                     ),
                     "human_decision_reason": (
                         f"'{fc['field_name']}' has a behavioral change that cannot be safely "

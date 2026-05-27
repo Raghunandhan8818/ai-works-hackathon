@@ -11,7 +11,12 @@ TRUNCATE TABLE
   symbols,
   fields,
   indexed_files,
-  services
+  services,
+  business_contexts,
+  code_classes,
+  code_methods,
+  drift_events,
+  test_evidences
 RESTART IDENTITY CASCADE;
 "
 

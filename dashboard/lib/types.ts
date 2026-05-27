@@ -33,6 +33,8 @@ export type InterruptOption = {
 
 export interface Interrupt {
   id: string
+  field_fqn: string
+  consumer_service: string
   service: string
   field: string
   question: string
@@ -44,6 +46,8 @@ export interface Interrupt {
   consumerAssumes?: string
   createdAt: string
   timeAgo: string
+  // Related interrupts grouped into this card (same endpoint, same PR analysis run)
+  relatedFqns?: Array<{ field_fqn: string; consumer_service: string; field: string; explanation: string }>
 }
 
 export type ActivityEventType =

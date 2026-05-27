@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import logging
 import os
+import re
 from typing import Optional
 
 from fastapi import FastAPI, Header, HTTPException, Request
@@ -89,6 +90,13 @@ def blast_radius(field_fqn: str):
     return radius.model_dump()
 
 
+@app.get("/disagreements/all")
+def list_all_disagreements():
+    store = get_store()
+    items = store.get_all_disagreements()
+    return [d.model_dump() for d in items]
+
+
 @app.get("/disagreements")
 def list_disagreements(field_fqn: Optional[str] = None):
     store = get_store()
@@ -121,28 +129,60 @@ async def resolve_interrupt(request: InterruptResolveRequest):
     # Mark as resolved
     store.resolve_disagreement(request.field_fqn, request.consumer_service)
 
-    if request.option_id in ("manual", "investigate"):
+    if request.option_id in ("manual", "investigate", "producer_compat"):
         return {"status": "resolved", "workflow_id": None}
 
-    # Trigger AutoFixConsumerWorkflow with the chosen strategy
     all_services = store.get_all_services()
-    consumer_svc = next((s for s in all_services if s.name == request.consumer_service), None)
+    producer_service = request.field_fqn.split("::")[0]
+
+    # Knowledge-gap interrupt: consumer_service was set to producer_service because no
+    # consumers were found during impact assessment. Fan out to all indexed consumers instead.
+    is_knowledge_gap = request.consumer_service == producer_service
+    if is_knowledge_gap:
+        actual_consumers = [s for s in all_services if s.name != producer_service and s.repo_url]
+        if not actual_consumers:
+            return {"status": "resolved", "workflow_id": None}
+        # Pick the first known consumer for the single-workflow response;
+        # a future improvement can fan out to all.
+        consumer_svc = actual_consumers[0]
+    else:
+        consumer_svc = next((s for s in all_services if s.name == request.consumer_service), None)
+
     consumer_repo_url = consumer_svc.repo_url if consumer_svc else ""
 
     if not consumer_repo_url:
         raise HTTPException(status_code=400, detail=f"No repo_url for consumer service {request.consumer_service}")
 
-    producer_service = request.field_fqn.split(".")[0]
     github_token = os.environ.get("RIPPLE_GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN", "")
 
     chosen_strategy = f"{request.option_label}: {request.option_description}".strip(": ")
 
+    # Extract meaningful field name and endpoint from the FQN.
+    # FQN format: "producer::transport::ENDPOINT::field.path"
+    # e.g. "spring-backend::REST::GET /hobbies/homepage::response.200"
+    fqn_parts = request.field_fqn.split("::")
+    raw_field = request.field_fqn.split(".")[-1]
+    # If the last segment is just a status code, use the field path level above it
+    is_status_code = re.match(r"^\d{3}$", raw_field)
+    if is_status_code:
+        # Use the endpoint path as field identifier
+        endpoint_raw = fqn_parts[2] if len(fqn_parts) > 2 else raw_field
+        raw_field = re.sub(r"^(GET|POST|PUT|DELETE|PATCH)\s+\/?", "", endpoint_raw).strip()
+
+    # Extract the endpoint path for use as a search term (e.g. "hobbies/homepage")
+    endpoint_segment = fqn_parts[2] if len(fqn_parts) > 2 else ""
+    ep_match = re.match(r"(?:GET|POST|PUT|DELETE|PATCH)\s+(.+?)(?:\s|$)", endpoint_segment)
+    endpoint_path = ep_match.group(1).strip("/ ") if ep_match else ""
+
     field_change = {
-        "field_name": request.field_fqn.split(".")[-1],
+        "field_name": raw_field,
+        "old_field_name": raw_field,
         "field_fqn": request.field_fqn,
+        "endpoint_path": endpoint_path,
         "change_type": disagreement.kind.value,
         "old_description": disagreement.consumer_assumes,
         "new_description": disagreement.producer_says,
+        "semantic_intent": f"{disagreement.consumer_assumes} → {disagreement.producer_says}",
         "severity_hint": disagreement.severity.value,
     }
     breaking_impact = {
@@ -157,14 +197,16 @@ async def resolve_interrupt(request: InterruptResolveRequest):
         "evidence": disagreement.evidence,
     }
 
+    resolved_consumer_service = consumer_svc.name if consumer_svc else request.consumer_service
+
     from ripple.workflows.auto_fix_consumer import AutoFixConsumerWorkflow
     client = await get_temporal_client()
-    workflow_id = f"manual-fix-{request.consumer_service[:20]}-{request.field_fqn[:20]}"
+    workflow_id = f"manual-fix-{resolved_consumer_service[:20]}-{request.field_fqn[:20]}"
 
     handle = await client.start_workflow(
         AutoFixConsumerWorkflow.run,
         args=[{
-            "consumer_service": request.consumer_service,
+            "consumer_service": resolved_consumer_service,
             "consumer_repo_url": consumer_repo_url,
             "producer_service": producer_service,
             "producer_pr_url": "",

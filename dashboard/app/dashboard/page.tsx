@@ -43,13 +43,17 @@ function buildGraph(
   const edges: GraphEdge[] = []
   producers.forEach((p) => {
     consumers.forEach((c) => {
-      const hasBreaking = disagreements.some((d) => d.consumer_service === c.name)
+      // Count consumer-attributed + knowledge-gap (producer_service == consumer_service) disagreements
+      const edgeDisagreements = disagreements.filter(
+        (d) => d.consumer_service === c.name || d.consumer_service === p.name
+      )
+      const hasBreaking = edgeDisagreements.length > 0
       edges.push({
         id: `${p.name}-${c.name}`,
         source: p.name,
         target: c.name,
         edgeType: hasBreaking ? 'breaking' : 'healthy',
-        label: hasBreaking ? `${disagreements.filter((d) => d.consumer_service === c.name).length} disagreement(s)` : undefined,
+        label: hasBreaking ? `${edgeDisagreements.length} disagreement(s)` : undefined,
       })
     })
   })

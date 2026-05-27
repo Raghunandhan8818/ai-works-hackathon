@@ -3,6 +3,17 @@ import InterruptCard from '@/components/interrupts/InterruptCard'
 import { api, ApiDisagreement } from '@/lib/api'
 import { Interrupt } from '@/lib/types'
 
+function injectConsumerNames(options: Interrupt['options'], consumerNames: string[]): Interrupt['options'] {
+  if (consumerNames.length === 0) return options
+  const label = consumerNames.join(' and ')
+  return options.map((o) => ({
+    ...o,
+    description: o.description
+      .replace(/all known consumers/gi, label)
+      .replace(/all consumers/gi, label),
+  }))
+}
+
 function timeAgo(isoDate: string): string {
   const diff = Date.now() - new Date(isoDate).getTime()
   const mins = Math.floor(diff / 60000)
@@ -13,9 +24,26 @@ function timeAgo(isoDate: string): string {
   return `${Math.floor(hours / 24)}d ago`
 }
 
+function extractFieldName(fqn: string): string {
+  const segments = fqn.split('::')
+  const lastSegment = segments[segments.length - 1] ?? fqn
+
+  if (lastSegment.includes('.')) {
+    const fieldPart = lastSegment.split('.').pop() ?? lastSegment
+    // If it's just an HTTP status code (e.g. "200", "404"), use the endpoint instead
+    if (/^\d+$/.test(fieldPart)) {
+      const endpoint = segments[2] ?? lastSegment
+      return endpoint.replace(/^(GET|POST|PUT|DELETE|PATCH)\s+\/?/, '')
+    }
+    return fieldPart
+  }
+  // Endpoint-level FQN: strip HTTP method prefix and leading slash
+  return lastSegment.replace(/^(GET|POST|PUT|DELETE|PATCH)\s+\/?/, '')
+}
+
 function toInterrupt(d: ApiDisagreement): Interrupt {
-  const fieldName = d.field_fqn.split('.').pop() ?? d.field_fqn
-  const producerService = d.field_fqn.split('.')[0] ?? 'producer'
+  const fieldName = extractFieldName(d.field_fqn)
+  const producerService = d.field_fqn.split('::')[0] ?? 'producer'
 
   const kindLabel: Record<string, string> = {
     NULLABLE_CONFLICT: 'nullable contract',
@@ -55,6 +83,8 @@ function toInterrupt(d: ApiDisagreement): Interrupt {
 
   return {
     id: `${d.field_fqn}::${d.consumer_service}`,
+    field_fqn: d.field_fqn,
+    consumer_service: d.consumer_service,
     service: d.consumer_service,
     field: fieldName,
     question: d.requires_human_decision && d.human_decision_reason
@@ -70,18 +100,82 @@ function toInterrupt(d: ApiDisagreement): Interrupt {
   }
 }
 
+// Extract "METHOD:/base-path" from a field FQN for grouping related interrupts.
+// e.g. "spring-backend::REST::GET /hobbies (for app clients)" → "GET:/hobbies"
+// e.g. "spring-backend::REST::POST /hobbies::request.price" → "POST:/hobbies"
+function basePath(fqn: string): string {
+  const segment = fqn.split('::')[2] ?? ''
+  const m = segment.match(/^(GET|POST|PUT|DELETE|PATCH)\s+\/?([^/\s?(]+)/)
+  if (m) return `${m[1]}:/${m[2]}`
+  return fqn
+}
+
+// Group interrupts from the same PR analysis run that touch the same endpoint.
+// The primary card absorbs related ones so the user decides once for all.
+function groupRelatedInterrupts(interrupts: Interrupt[]): Interrupt[] {
+  const result: Interrupt[] = []
+  const used = new Set<string>()
+
+  for (const primary of interrupts) {
+    if (used.has(primary.id)) continue
+    used.add(primary.id)
+
+    const primaryPath = basePath(primary.field_fqn)
+    const primaryTime = new Date(primary.createdAt).getTime()
+    const related: Array<{ field_fqn: string; consumer_service: string; field: string; explanation: string }> = []
+
+    for (const other of interrupts) {
+      if (used.has(other.id)) continue
+      const sameService = other.consumer_service === primary.consumer_service
+      const withinSameRun = Math.abs(new Date(other.createdAt).getTime() - primaryTime) < 120_000
+      const sameEndpoint = basePath(other.field_fqn) === primaryPath
+      if (sameService && withinSameRun && sameEndpoint) {
+        related.push({
+          field_fqn: other.field_fqn,
+          consumer_service: other.consumer_service,
+          field: other.field,
+          explanation: other.context,
+        })
+        used.add(other.id)
+      }
+    }
+
+    result.push(related.length > 0 ? { ...primary, relatedFqns: related } : primary)
+  }
+
+  return result
+}
+
 export default async function InterruptsPage() {
   let interrupts: Interrupt[] = []
+  let resolvedDisagreements: Awaited<ReturnType<typeof api.allDisagreements>> = []
 
   try {
-    const disagreements = await api.disagreements()
-    interrupts = disagreements
-      .filter((d) => d.resolved_at === null && d.requires_human_decision === true)
-      .sort((a, b) => {
-        const order = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 }
-        return (order[a.severity] ?? 3) - (order[b.severity] ?? 3)
-      })
-      .map(toInterrupt)
+    const [activeDisagreements, allDisagreements, services] = await Promise.all([
+      api.disagreements(),
+      api.allDisagreements(),
+      api.services(),
+    ])
+    const consumerNames = services
+      .filter((s) => s.role === 'consumer' || s.role === 'both')
+      .map((s) => s.name)
+
+    interrupts = groupRelatedInterrupts(
+      activeDisagreements
+        .filter((d) => d.resolved_at === null && d.requires_human_decision === true)
+        .sort((a, b) => {
+          const order = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 }
+          return (order[a.severity] ?? 3) - (order[b.severity] ?? 3)
+        })
+        .map((d) => {
+          const interrupt = toInterrupt(d)
+          return { ...interrupt, options: injectConsumerNames(interrupt.options, consumerNames) }
+        })
+    )
+
+    resolvedDisagreements = allDisagreements
+      .filter((d) => d.resolved_at !== null)
+      .sort((a, b) => new Date(b.resolved_at!).getTime() - new Date(a.resolved_at!).getTime())
   } catch {
     // backend unavailable — show empty state
   }
@@ -133,6 +227,89 @@ export default async function InterruptsPage() {
             {interrupts.map((interrupt) => (
               <InterruptCard key={interrupt.id} interrupt={interrupt} />
             ))}
+          </div>
+        )}
+
+        {/* Resolved section */}
+        {resolvedDisagreements.length > 0 && (
+          <div className="max-w-3xl mt-10">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="h-px flex-1" style={{ background: '#E8E5DF' }} />
+              <span className="text-xs font-semibold tracking-widest uppercase" style={{ color: '#9CA3AF' }}>
+                Resolved
+              </span>
+              <div className="h-px flex-1" style={{ background: '#E8E5DF' }} />
+            </div>
+            <div className="space-y-1.5">
+              {resolvedDisagreements.map((d) => {
+                const fieldName = extractFieldName(d.field_fqn)
+                const hasPR = d.fix_pr_url && d.fix_pr_url !== ''
+                const wasAutoFix = !d.requires_human_decision
+                return (
+                  <div
+                    key={`${d.field_fqn}::${d.consumer_service}`}
+                    className="flex items-center gap-3 px-4 py-2.5 rounded-xl"
+                    style={{ background: '#F8F7F4', border: '1px solid #E8E5DF' }}
+                  >
+                    {/* Icon */}
+                    <div
+                      className="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0"
+                      style={{ background: hasPR ? '#ECFDF5' : '#F3F4F6', color: hasPR ? '#059669' : '#9CA3AF' }}
+                    >
+                      <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                        <path d="M1.5 5l2.5 2.5 4.5-5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    </div>
+
+                    {/* Field name */}
+                    <code className="text-xs font-semibold flex-shrink-0" style={{ color: '#111827', fontFamily: 'monospace' }}>
+                      {fieldName}
+                    </code>
+
+                    {/* Service */}
+                    <span className="text-xs" style={{ color: '#6B7280' }}>{d.consumer_service}</span>
+
+                    <div className="flex-1" />
+
+                    {/* PR link OR status badge */}
+                    {hasPR ? (
+                      <>
+                        <span
+                          className="text-xs font-medium px-2 py-0.5 rounded-full flex-shrink-0"
+                          style={{ background: '#ECFDF5', color: '#065F46' }}
+                        >
+                          Fix PR raised
+                        </span>
+                        <a
+                          href={d.fix_pr_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-xs font-medium underline flex-shrink-0"
+                          style={{ color: '#2563EB' }}
+                        >
+                          View PR →
+                        </a>
+                      </>
+                    ) : (
+                      <span
+                        className="text-xs font-medium px-2 py-0.5 rounded-full flex-shrink-0"
+                        style={{
+                          background: wasAutoFix ? '#FEF2F2' : '#F3F4F6',
+                          color: wasAutoFix ? '#9B1C1C' : '#6B7280',
+                        }}
+                      >
+                        {wasAutoFix ? 'Fix failed' : 'No fix PR'}
+                      </span>
+                    )}
+
+                    {/* Time resolved */}
+                    <span className="text-xs flex-shrink-0" style={{ color: '#9CA3AF' }}>
+                      {timeAgo(d.resolved_at!)}
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
           </div>
         )}
       </div>

@@ -223,7 +223,7 @@ Return ONLY this JSON (no markdown, no explanation):
     {{
       "field_fqn": "<fqn>",
       "consumer_service": "<service>",
-      "kind": "NULLABLE_CHANGED|TYPE_CHANGED|UNIT_MISMATCH|FIELD_REMOVED|NEW_REQUIRED_FIELD",
+      "kind": "UNIT_MISMATCH|TYPE_CHANGED|NULLABLE_CHANGED|ENUM_VALUE_CHANGED|CONSTRAINT_UNKNOWN_TO_CONSUMER|FORMAT_MISMATCH|FIELD_REMOVED|NEW_REQUIRED_FIELD|ANNOTATION_CHANGE|STRUCTURE_CHANGE|BEHAVIORAL_CHANGE|SEMANTIC_INTENT_MISMATCH",
       "producer_says": "<what producer declares>",
       "consumer_assumes": "<what consumer code does>",
       "severity": "CRITICAL|HIGH|MEDIUM|LOW",
@@ -235,9 +235,14 @@ Return ONLY this JSON (no markdown, no explanation):
 Analysis rules:
 - Only emit consumer_beliefs for fields that have actual usages in the evidence above
 - Test assertions marked [TEST] are GROUND TRUTH — weight them at confidence ≥ 0.9
-- ops=[divide_by_100] → consumer assumes cents/pence; producer declares dollars → UNIT_MISMATCH
-- ops=[safe_navigation] or ops=[null_check] → consumer treats field as nullable
-- ops=[parse_int] or ops=[cast_int] → consumer expects integer
+- ops=[divide_by_100] → consumer assumes the value is already in base units; if producer multiplies by 100 server-side → BEHAVIORAL_CHANGE or UNIT_MISMATCH
+- ops=[multiply_by_100] → consumer is converting to cents before sending; check if producer also multiplies → UNIT_MISMATCH (double-multiplication)
+- ops=[safe_navigation] or ops=[null_check] → consumer treats field as nullable; if producer declares non-nullable → NULLABLE_CHANGED
+- ops=[parse_int] or ops=[cast_int] → consumer expects integer; if producer declares float/double → TYPE_CHANGED
+- ops=[compare_enum] → consumer compares enum values by string; if producer changed enum casing (e.g. MALE→male) → ENUM_VALUE_CHANGED
+- Role/logic inversion (e.g. role='user' now returns different data than before) → BEHAVIORAL_CHANGE
+- Field renamed on wire (e.g. jwtToken→accessToken, @JsonProperty changed) → ANNOTATION_CHANGE
+- Response shape changed (e.g. role was string, now object) → STRUCTURE_CHANGE
 - Only emit disagreements when there is a real conflict — not every field needs one"""
 
     client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
@@ -280,7 +285,7 @@ def _build_fallback_graph(all_fields, regex_beliefs) -> dict:
                 "field_path": f.field_path,
                 "declared_type": f.declared_type,
                 "nullable": f.nullable,
-                "constraints": [{"kind": c.kind, "value": c.value} for c in f.constraints],
+                "constraints": [{"kind": c.kind, "value": c.value, "source": c.source} for c in f.constraints],
             }
             for f in all_fields
         ],

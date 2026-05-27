@@ -194,7 +194,8 @@ Set requires_human_decision = true ONLY when:
 - The correct mapping cannot be determined from code alone
 
 Set requires_human_decision = false for:
-- Mechanical renames, null-checks, type widening, structural changes with one obvious correct fix
+- REMOVED change_type where old_field_name != field_name — this is a field rename, always a mechanical substitution (find old name, replace with new name). NEVER set requires_human_decision=true for renames.
+- Mechanical null-checks, type widening, structural changes with one obvious correct fix
 
 When requires_human_decision = false, set mitigation_options = [].
 When requires_human_decision = true, provide 2-3 concrete business-level options (NOT "I'll fix manually" — the frontend adds that).
@@ -410,7 +411,7 @@ async def assess_consumer_impact_activity(payload: dict) -> list[dict]:
             for impact in impacts:
                 if not isinstance(impact, dict):
                     continue
-                all_impacts.append(_normalise_impact(impact, consumer_service, usages, consumer_repo_url))
+                all_impacts.append(_normalise_impact(impact, consumer_service, usages, consumer_repo_url, field_fqn))
         except Exception as e:
             logger.error(
                 "assess_consumer_impact_activity LLM failed field=%s consumer=%s: %s",
@@ -425,7 +426,7 @@ async def assess_consumer_impact_activity(payload: dict) -> list[dict]:
 
 
 def _normalise_impact(
-    impact: dict, default_service: str, usages: list, consumer_repo_url: str = ""
+    impact: dict, default_service: str, usages: list, consumer_repo_url: str = "", field_fqn: str = ""
 ) -> dict:
     valid_severities = {"CRITICAL", "HIGH", "MEDIUM", "LOW"}
     file_path = str(impact.get("file_path", ""))
@@ -459,6 +460,7 @@ def _normalise_impact(
             for i, opt in enumerate(impact.get("mitigation_options", [])[:3])
             if isinstance(opt, dict)
         ],
+        "field_fqn": field_fqn or str(impact.get("field_fqn", ""))[:500],
     }
 
 
@@ -651,6 +653,23 @@ async def upsert_pr_disagreements_activity(payload: dict) -> int:
         written += 1
 
     return written
+
+
+@activity.defn(name="record_fix_pr_activity")
+async def record_fix_pr_activity(payload: dict) -> None:
+    """Write the PR URL back to disagreement records and mark them resolved."""
+    pr_url: str = payload["pr_url"]
+    consumer_service: str = payload["consumer_service"]
+    field_fqns: list[str] = payload.get("field_fqns", [])
+    store = get_store()
+    for fqn in field_fqns:
+        if not fqn:
+            continue
+        try:
+            store.mark_disagreement_resolved(fqn, consumer_service, pr_url)
+            logger.info("record_fix_pr fqn=%s pr=%s", fqn, pr_url)
+        except Exception as exc:
+            logger.warning("record_fix_pr failed fqn=%s: %s", fqn, exc)
 
 
 def _parse_owner_repo(repo_url: str) -> Optional[str]:

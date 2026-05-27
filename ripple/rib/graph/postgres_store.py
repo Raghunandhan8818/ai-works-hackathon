@@ -665,6 +665,7 @@ class PostgresStore:
             requires_human_decision=bool(row.get("requires_human_decision") or False),
             human_decision_reason=row.get("human_decision_reason") or "",
             mitigation_options=_json_list(row.get("mitigation_options_json")),
+            resolution_reason=row.get("resolution_reason") or "",
         )
 
     def resolve_disagreement(self, field_fqn: str, consumer_service: str) -> None:
@@ -679,6 +680,22 @@ class PostgresStore:
                 (datetime.now(timezone.utc), field_fqn, consumer_service),
             )
             conn.commit()
+
+    def mark_producer_merged(self, producer_service: str) -> int:
+        """Mark all active disagreements for a producer as producer_merged. Returns count."""
+        with self._connect() as conn:
+            result = conn.execute(
+                """
+                UPDATE disagreements
+                SET resolved_at = %s, resolution_reason = 'producer_merged'
+                WHERE resolved_at IS NULL
+                  AND field_fqn LIKE %s
+                RETURNING id
+                """,
+                (datetime.now(timezone.utc), f"{producer_service}::%"),
+            )
+            conn.commit()
+            return result.rowcount
 
     def upsert_code_class(self, code_class: CodeClass) -> None:
         with self._connect() as conn:

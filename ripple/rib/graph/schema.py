@@ -140,6 +140,7 @@ class Disagreement(BaseModel):
     requires_human_decision: bool = False
     human_decision_reason: str = ""
     mitigation_options: list[dict] = []  # list of {id, label, description}
+    resolution_reason: str = ""
 
 
 class DriftEvent(BaseModel):

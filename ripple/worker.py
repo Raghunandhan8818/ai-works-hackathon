@@ -32,6 +32,7 @@ from ripple.activities.indexing.cross_repo_graph_builder import cross_repo_graph
 from ripple.activities.indexing.write_graph import write_graph_to_store_activity
 from ripple.activities.fixing.mechanical_fix import mechanical_fix_activity
 from ripple.activities.fixing.semantic_fix import semantic_fix_activity
+from ripple.activities.post_merge_activities import mark_producer_merged_activity
 from ripple.logging_config import configure_logging
 from ripple.temporal_client import get_temporal_client
 from ripple.workflows.analyze_pr import AnalyzePRWorkflow
@@ -39,6 +40,7 @@ from ripple.workflows.auto_fix_consumer import AutoFixConsumerWorkflow
 from ripple.workflows.ecosystem_pipeline import EcosystemPipelineWorkflow
 from ripple.workflows.ingest_ecosystem import IngestEcosystemWorkflow
 from ripple.workflows.ingest_service import IngestServiceWorkflow
+from ripple.workflows.post_merge import PostMergeWorkflow
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -59,6 +61,7 @@ async def main() -> None:
             EcosystemPipelineWorkflow,
             AnalyzePRWorkflow,
             AutoFixConsumerWorkflow,
+            PostMergeWorkflow,
         ],
         activities=[
             clone_repo_activity,
@@ -88,6 +91,8 @@ async def main() -> None:
             # PR interrupt flow
             upsert_pr_disagreements_activity,
             record_fix_pr_activity,
+            # post-merge cleanup
+            mark_producer_merged_activity,
         ],
     )
 

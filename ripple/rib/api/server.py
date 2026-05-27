@@ -273,6 +273,52 @@ async def analyze_pr(request: AnalyzePRRequest):
     return await start_analyze_workflow(request)
 
 
+class PostMergeRequest(BaseModel):
+    repo_url: str
+    producer_service: str
+    pr_number: int = 0
+    github_token: str = ""
+
+
+class PostMergeStatus(BaseModel):
+    workflow_id: str
+    run_id: str
+    status: str
+
+
+@app.post("/api/post-merge", response_model=PostMergeStatus)
+async def post_merge(request: PostMergeRequest):
+    """
+    Trigger post-merge processing for a producer PR:
+    1. Re-index producer against new main
+    2. Mark all active disagreements as producer_merged
+    """
+    from ripple.workflows.post_merge import PostMergeWorkflow
+
+    github_token = request.github_token or os.environ.get("RIPPLE_GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN", "")
+
+    client = await get_temporal_client()
+    workflow_id = f"post-merge-{request.producer_service}-{request.pr_number}"
+
+    handle = await client.start_workflow(
+        PostMergeWorkflow.run,
+        args=[{
+            "producer_service": request.producer_service,
+            "repo_url": request.repo_url,
+            "github_token": github_token,
+        }],
+        id=workflow_id,
+        task_queue="rib",
+        id_conflict_policy=WorkflowIDConflictPolicy.TERMINATE_EXISTING,
+    )
+
+    return PostMergeStatus(
+        workflow_id=handle.id,
+        run_id=handle.result_run_id or "",
+        status="running",
+    )
+
+
 # ── GitHub Webhooks ───────────────────────────────────────────────────────────
 
 @app.post("/webhook/github")
@@ -303,10 +349,42 @@ async def github_webhook(
 
     if event == "pull_request":
         action = payload.get("action", "")
+        pr_data = payload.get("pull_request", {})
+        pr_number = pr_data.get("number", 0)
+
+        if action == "closed" and pr_data.get("merged"):
+            repo_full = payload.get("repository", {}).get("full_name", "")
+            repo_url = f"https://github.com/{repo_full}"
+            producer_service = _find_service_by_repo(get_store(), payload.get("repository", {}).get("clone_url", "")) or repo_full.split("/")[-1]
+
+            github_token = (
+                os.environ.get("RIPPLE_GITHUB_TOKEN")
+                or os.environ.get("GITHUB_TOKEN", "")
+            )
+
+            from ripple.workflows.post_merge import PostMergeWorkflow
+            client = await get_temporal_client()
+            logger.info(
+                "webhook github PR merged repo=%s pr=%s service=%s — triggering PostMergeWorkflow",
+                repo_full, pr_number, producer_service,
+            )
+            await client.start_workflow(
+                PostMergeWorkflow.run,
+                args=[{
+                    "producer_service": producer_service,
+                    "repo_url": repo_url,
+                    "github_token": github_token,
+                }],
+                id=f"post-merge-{producer_service}-{pr_number}",
+                task_queue="rib",
+                id_conflict_policy=WorkflowIDConflictPolicy.TERMINATE_EXISTING,
+            )
+            return {"status": "post_merge_triggered", "producer_service": producer_service}
+
         if action not in ("opened", "synchronize", "reopened"):
             return {"status": "ignored", "reason": f"action={action}"}
 
-        pr = payload["pull_request"]
+        pr = pr_data
         repo = payload["repository"]
         repo_full_name = repo["full_name"]  # owner/repo
 

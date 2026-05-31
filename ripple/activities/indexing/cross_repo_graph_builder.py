@@ -69,8 +69,17 @@ async def cross_repo_graph_builder_activity(
         else:
             logger.warning("openapi not found service=%s tried=%s", service_name, openapi_path)
 
+    if not all_fields and consumers:
+        # Consumer-only re-ingest — load producer fields already in DB
+        logger.info("no producers in request, loading existing fields from DB for consumer re-index")
+        try:
+            all_fields = list(get_store().get_all_fields())
+            logger.info("loaded %d fields from DB", len(all_fields))
+        except Exception as exc:
+            logger.warning("failed to load fields from DB: %s", exc)
+
     if not all_fields:
-        logger.warning("no fields from any producer OpenAPI spec — returning empty graph")
+        logger.warning("no fields from any producer OpenAPI spec or DB — returning empty graph")
         return {"fields": [], "consumer_beliefs": [], "disagreements": []}
 
     # ── Step 2: Find all usages across consumer repos (grep) ─────────────────

@@ -282,15 +282,22 @@ def _run(
     if extra_env:
         env.update(extra_env)
     logger.info("scip subprocess cwd=%s cmd=%s", cwd, " ".join(cmd))
-    result = subprocess.run(
-        cmd,
-        cwd=str(cwd),
-        capture_output=True,
-        text=True,
-        timeout=timeout_seconds,
-        env=env,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            env=env,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("scip subprocess timed out after %ds cmd=%s", timeout_seconds, " ".join(cmd))
+        return False
+    except Exception as exc:
+        logger.warning("scip subprocess error cmd=%s err=%s", " ".join(cmd), exc)
+        return False
     if result.returncode != 0:
         stderr_tail = (result.stderr or "")[-2000:]
         stdout_tail = (result.stdout or "")[-1000:]
@@ -367,11 +374,88 @@ def _generate_python(repo_path: Path) -> bool:
     return False
 
 
+def _npm_install(repo_path: Path) -> None:
+    """Install node_modules so scip-typescript can resolve imports and tsconfig extends."""
+    pkg_json = repo_path / "package.json"
+    if not pkg_json.exists():
+        return
+
+    # Prefer yarn if yarn.lock exists, otherwise npm
+    if (repo_path / "yarn.lock").exists() and shutil.which("yarn"):
+        _run(
+            ["yarn", "install", "--frozen-lockfile", "--ignore-scripts", "--non-interactive"],
+            repo_path,
+            timeout_seconds=300,
+        )
+        return
+
+    npm = shutil.which("npm")
+    if npm:
+        _run(
+            [npm, "install", "--prefer-offline", "--ignore-scripts", "--legacy-peer-deps"],
+            repo_path,
+            timeout_seconds=300,
+        )
+
+
+def _patch_expo_tsconfig(repo_path: Path) -> Path | None:
+    """
+    Expo projects extend 'expo/tsconfig.base' which lives in node_modules.
+    If that base file is still missing after npm install (e.g. install was skipped
+    because it's too slow), write a minimal fallback tsconfig that scip-typescript
+    can parse without crashing.  Returns the patched path or None if not needed.
+    """
+    tsconfig = repo_path / "tsconfig.json"
+    if not tsconfig.exists():
+        return None
+
+    import json
+    try:
+        cfg = json.loads(tsconfig.read_text())
+    except Exception:
+        return None
+
+    extends = cfg.get("extends", "")
+    if "expo" not in str(extends):
+        return None
+
+    base_path = repo_path / "node_modules" / "expo" / "tsconfig.base.json"
+    if base_path.exists():
+        return None  # npm install worked — no patch needed
+
+    # Write a scip-friendly override next to the real tsconfig
+    override_path = repo_path / "tsconfig.scip.json"
+    patched = dict(cfg)
+    patched.pop("extends", None)
+    patched.setdefault("compilerOptions", {}).update({
+        "allowJs": True,
+        "noEmit": True,
+        "skipLibCheck": True,
+        "moduleResolution": "node",
+        "esModuleInterop": True,
+        "jsx": "react-native",
+    })
+    override_path.write_text(json.dumps(patched, indent=2))
+    logger.info("scip expo tsconfig patch written path=%s", override_path)
+    return override_path
+
+
 def _generate_typescript(repo_path: Path) -> bool:
+    # Install node_modules so scip-typescript can resolve tsconfig extends and imports
+    _npm_install(repo_path)
+
+    # Patch Expo tsconfig if node_modules/expo still missing after install
+    tsconfig_override = _patch_expo_tsconfig(repo_path)
+    extra_flags: list[str] = []
+    if tsconfig_override:
+        extra_flags = ["--tsconfig", str(tsconfig_override)]
+
     if shutil.which("scip-typescript"):
-        if _run(["scip-typescript", "index"], repo_path):
-            return (repo_path / SCIP_INDEX_NAME).exists()
+        if _run(["scip-typescript", "index", *extra_flags], repo_path):
+            if (repo_path / SCIP_INDEX_NAME).exists():
+                return True
     if shutil.which("npx"):
-        if _run(["npx", "--yes", "@sourcegraph/scip-typescript", "index"], repo_path):
-            return (repo_path / SCIP_INDEX_NAME).exists()
+        if _run(["npx", "--yes", "@sourcegraph/scip-typescript", "index", *extra_flags], repo_path):
+            if (repo_path / SCIP_INDEX_NAME).exists():
+                return True
     return False

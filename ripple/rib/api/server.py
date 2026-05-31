@@ -286,6 +286,43 @@ class PostMergeStatus(BaseModel):
     status: str
 
 
+@app.post("/api/flush")
+def flush_db():
+    """
+    Truncate all Ripple tables — wipes fields, beliefs, disagreements (interrupts),
+    usages, services, profiles, drift events, and all indexed metadata.
+    """
+    import psycopg2
+    db_url = os.environ.get("RIB_DATABASE_URL", "")
+    if not db_url:
+        raise HTTPException(status_code=500, detail="RIB_DATABASE_URL not set")
+    conn = psycopg2.connect(db_url)
+    conn.autocommit = True
+    cur = conn.cursor()
+    cur.execute("""
+        TRUNCATE TABLE
+            disagreements,
+            consumer_beliefs,
+            semantic_profiles,
+            history_signals,
+            field_usages,
+            symbols,
+            fields,
+            indexed_files,
+            services,
+            business_contexts,
+            code_classes,
+            code_methods,
+            drift_events,
+            test_evidences
+        RESTART IDENTITY CASCADE
+    """)
+    cur.close()
+    conn.close()
+    logger.info("api/flush: all tables truncated")
+    return {"status": "flushed", "message": "All Ripple data cleared — ready for re-ingest"}
+
+
 @app.post("/api/post-merge", response_model=PostMergeStatus)
 async def post_merge(request: PostMergeRequest):
     """

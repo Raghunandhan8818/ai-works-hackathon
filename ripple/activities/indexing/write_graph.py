@@ -56,6 +56,7 @@ async def write_graph_to_store_activity(graph: dict, services: list[dict]) -> di
                 name=name,
                 repo_url=svc.get("repo_url", ""),
                 role=role_str,
+                last_indexed_at=now,
             ))
         except Exception as exc:
             logger.warning("write_graph service upsert failed name=%s err=%s", name, exc)

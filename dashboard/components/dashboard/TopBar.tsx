@@ -1,4 +1,8 @@
+'use client'
+
 import Link from 'next/link'
+import { useEffect, useState } from 'react'
+import { api } from '@/lib/api'
 
 interface TopBarProps {
   title: string
@@ -6,6 +10,19 @@ interface TopBarProps {
 }
 
 export default function TopBar({ title, subtitle }: TopBarProps) {
+  const [interruptCount, setInterruptCount] = useState(0)
+
+  useEffect(() => {
+    api.disagreements()
+      .then((d) => {
+        const count = d.filter(
+          (item) => item.requires_human_decision && item.resolved_at === null
+        ).length
+        setInterruptCount(count)
+      })
+      .catch(() => {})
+  }, [])
+
   return (
     <header
       className="flex items-center justify-between px-8 py-4"
@@ -30,7 +47,8 @@ export default function TopBar({ title, subtitle }: TopBarProps) {
       </div>
 
       <div className="flex items-center gap-3">
-        {/* Interrupt badge */}
+        {/* Interrupt badge — only shown when there are pending interrupts */}
+        {interruptCount > 0 && (
         <Link
           href="/dashboard/interrupts"
           className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors"
@@ -44,8 +62,9 @@ export default function TopBar({ title, subtitle }: TopBarProps) {
             <path d="M7 1a6 6 0 100 12A6 6 0 007 1z" stroke="currentColor" strokeWidth="1.3" />
             <path d="M7 4.5v3.5M7 9.5v.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
           </svg>
-          1 interrupt pending
+          {interruptCount} interrupt{interruptCount !== 1 ? 's' : ''} pending
         </Link>
+        )}
 
         {/* View on GitHub */}
         <a

@@ -9,6 +9,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from ripple.rib.graph.schema import (
+    ArchitecturalIntent,
     BlastRadius,
     BlastRadiusEntry,
     BusinessContext,
@@ -887,6 +888,72 @@ class PostgresStore:
             )
             for r in rows
         ]
+
+    # ── Architectural Intent methods ─────────────────────────────────────────
+
+    def upsert_architecture_intent(self, intent: ArchitecturalIntent) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO architecture_intents
+                    (repo, constraint_type, natural_language, encoded_rule, source, pr_url, pr_comment_id, created_at, updated_at)
+                VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s, NOW(), NOW())
+                """,
+                (
+                    intent.repo,
+                    intent.constraint_type,
+                    intent.natural_language,
+                    json.dumps(intent.encoded_rule),
+                    intent.source,
+                    intent.pr_url,
+                    intent.pr_comment_id,
+                ),
+            )
+            conn.commit()
+
+    def get_architecture_intents(self, repo: str) -> list[ArchitecturalIntent]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, repo, constraint_type, natural_language, encoded_rule,
+                       source, pr_url, pr_comment_id, created_at, updated_at
+                FROM architecture_intents
+                WHERE repo = %s
+                ORDER BY created_at
+                """,
+                (repo,),
+            ).fetchall()
+        return [
+            ArchitecturalIntent(
+                id=row["id"],
+                repo=row["repo"],
+                constraint_type=row["constraint_type"],
+                natural_language=row["natural_language"],
+                encoded_rule=row["encoded_rule"] or {},
+                source=row["source"],
+                pr_url=row["pr_url"],
+                pr_comment_id=row["pr_comment_id"],
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+            )
+            for row in rows
+        ]
+
+    def set_architectural_review_enabled(self, service_name: str, enabled: bool) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE services SET architectural_review_enabled = %s WHERE name = %s",
+                (enabled, service_name),
+            )
+            conn.commit()
+
+    def get_architectural_review_enabled(self, service_name: str) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT architectural_review_enabled FROM services WHERE name = %s",
+                (service_name,),
+            ).fetchone()
+        return bool(row["architectural_review_enabled"]) if row else False
 
 
 def _json_list(value: Any) -> list:

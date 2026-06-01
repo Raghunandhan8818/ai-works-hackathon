@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import httpx
 import logging
 import os
 import re
@@ -27,7 +28,9 @@ from ripple.rib.graph.schema import (
     ServiceRecord,
 )
 from ripple.temporal_client import get_temporal_client
+from ripple.workflows.consolidated_pr_review import ConsolidatedPRReviewWorkflow
 from ripple.workflows.ecosystem_pipeline import EcosystemPipelineWorkflow
+from ripple.workflows.learn_feedback import LearnFromFeedbackWorkflow
 from temporalio.common import WorkflowIDConflictPolicy
 
 
@@ -37,6 +40,10 @@ class InterruptResolveRequest(BaseModel):
     option_id: str
     option_label: str
     option_description: str = ""
+
+
+class ServiceReviewSettingRequest(BaseModel):
+    enabled: bool
 
 logger = logging.getLogger(__name__)
 
@@ -270,6 +277,20 @@ async def resolve_interrupt(request: InterruptResolveRequest):
     return {"status": "fix_triggered", "workflow_id": handle.id}
 
 
+@app.get("/api/services/{service_name}/review-enabled")
+async def get_review_enabled(service_name: str):
+    store = get_store()
+    enabled = store.get_architectural_review_enabled(service_name)
+    return {"service": service_name, "architectural_review_enabled": enabled}
+
+
+@app.post("/api/services/{service_name}/review-enabled")
+async def set_review_enabled(service_name: str, body: ServiceReviewSettingRequest):
+    store = get_store()
+    store.set_architectural_review_enabled(service_name, body.enabled)
+    return {"service": service_name, "architectural_review_enabled": body.enabled}
+
+
 @app.post("/ingest", response_model=IngestWorkflowStatus)
 async def ingest_ecosystem(request: IngestEcosystemRequest):
     return await start_ingest_workflow(request)
@@ -495,8 +516,37 @@ async def github_webhook(
             "webhook github PR event repo=%s pr=%s service=%s",
             repo_full_name, pr["number"], producer_service,
         )
-        status = await start_analyze_workflow(analyze_request)
-        return {"status": "triggered", "workflow_id": status.workflow_id}
+
+        # Check if architectural review is enabled for this service
+        arch_review_enabled = False
+        if producer_service:
+            try:
+                arch_review_enabled = store.get_architectural_review_enabled(producer_service)
+            except Exception:
+                pass
+
+        if arch_review_enabled:
+            client = await get_temporal_client()
+            consolidated_request = {
+                "repo_url": f"https://github.com/{repo_full_name}",
+                "branch": pr["head"]["ref"],
+                "base_branch": pr["base"]["ref"],
+                "pr_number": pr["number"],
+                "head_commit": pr["head"]["sha"],
+                "producer_service": producer_service,
+                "github_token": github_token,
+            }
+            wf = await client.start_workflow(
+                ConsolidatedPRReviewWorkflow.run,
+                args=[consolidated_request],
+                id=f"consolidated-review-{repo_full_name.replace('/', '-')}-{pr['number']}",
+                task_queue="rib",
+                id_conflict_policy=WorkflowIDConflictPolicy.TERMINATE_EXISTING,
+            )
+            return {"status": "consolidated_review_triggered", "workflow_id": wf.id}
+        else:
+            status = await start_analyze_workflow(analyze_request)
+            return {"status": "triggered", "workflow_id": status.workflow_id}
 
     elif event == "push":
         # Only re-index on pushes to the default branch (merges)
@@ -533,6 +583,64 @@ async def github_webhook(
         logger.info("webhook push: re-indexing service=%s repo=%s", service_name, clone_url)
         status = await start_ingest_workflow(reindex_request)
         return {"status": "reindex_triggered", "workflow_id": status.workflow_id, "service": service_name}
+
+    elif event == "issue_comment":
+        action = payload.get("action", "")
+        if action != "created":
+            return {"status": "ignored", "reason": "not a new comment"}
+
+        comment_body: str = payload.get("comment", {}).get("body", "").strip()
+        if not comment_body.lower().startswith("/learn"):
+            return {"status": "ignored", "reason": "not a /learn command"}
+
+        # Only process on PRs (issue_comment fires on both issues and PRs)
+        issue = payload.get("issue", {})
+        if "pull_request" not in issue:
+            return {"status": "ignored", "reason": "not on a PR"}
+
+        correction_text = comment_body[len("/learn"):].strip()
+        repo = payload["repository"]
+        repo_full_name = repo["full_name"]
+        pr_number = issue["number"]
+        comment_id = str(payload.get("comment", {}).get("id", ""))
+
+        github_token = os.environ.get("RIPPLE_GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN", "")
+        branch = ""
+        base_branch = "main"
+        if github_token:
+            try:
+                async with httpx.AsyncClient(timeout=10) as gh_client:
+                    resp = await gh_client.get(
+                        f"https://api.github.com/repos/{repo_full_name}/pulls/{pr_number}",
+                        headers={"Authorization": f"Bearer {github_token}", "Accept": "application/vnd.github+json"},
+                    )
+                    if resp.status_code == 200:
+                        pr_data = resp.json()
+                        branch = pr_data.get("head", {}).get("ref", "")
+                        base_branch = pr_data.get("base", {}).get("ref", "main")
+            except Exception:
+                pass
+
+        learn_request = {
+            "correction_text": correction_text,
+            "repo_full": repo_full_name,
+            "pr_number": pr_number,
+            "comment_id": comment_id,
+            "branch": branch,
+            "base_branch": base_branch,
+            "github_token": github_token,
+        }
+
+        temporal_client = await get_temporal_client()
+        wf = await temporal_client.start_workflow(
+            LearnFromFeedbackWorkflow.run,
+            args=[learn_request],
+            id=f"learn-{repo_full_name.replace('/', '-')}-{pr_number}-{comment_id}",
+            task_queue="rib",
+            id_conflict_policy=WorkflowIDConflictPolicy.TERMINATE_EXISTING,
+        )
+        logger.info("LearnFromFeedbackWorkflow triggered repo=%s pr=%s", repo_full_name, pr_number)
+        return {"status": "learn_triggered", "workflow_id": wf.id}
 
     return {"status": "ignored", "reason": f"unhandled event={event}"}
 

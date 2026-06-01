@@ -206,3 +206,22 @@ CREATE INDEX IF NOT EXISTS idx_code_classes_service ON code_classes (service_nam
 CREATE INDEX IF NOT EXISTS idx_code_methods_service ON code_methods (service_name);
 CREATE INDEX IF NOT EXISTS idx_test_evidences_field ON test_evidences (field_fqn);
 CREATE INDEX IF NOT EXISTS idx_drift_events_field ON drift_events (field_fqn);
+
+-- ── Architectural Review ─────────────────────────────────────────────────────
+
+ALTER TABLE services ADD COLUMN IF NOT EXISTS architectural_review_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+
+CREATE TABLE IF NOT EXISTS architecture_intents (
+    id BIGSERIAL PRIMARY KEY,
+    repo TEXT NOT NULL,
+    constraint_type TEXT NOT NULL,
+    natural_language TEXT NOT NULL,
+    encoded_rule JSONB NOT NULL DEFAULT '{}'::jsonb,
+    source TEXT NOT NULL DEFAULT 'learned',
+    pr_url TEXT,
+    pr_comment_id TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_architecture_intents_repo ON architecture_intents (repo);

@@ -196,6 +196,19 @@ class BusinessContext(BaseModel):
     synthesized_at: datetime
 
 
+class ArchitecturalIntent(BaseModel):
+    id: Optional[int] = None
+    repo: str
+    constraint_type: str
+    natural_language: str
+    encoded_rule: dict = {}
+    source: str = "learned"
+    pr_url: Optional[str] = None
+    pr_comment_id: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
 class ServiceRecord(BaseModel):
     name: str
     repo_url: str = ""

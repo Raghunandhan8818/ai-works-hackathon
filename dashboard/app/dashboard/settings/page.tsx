@@ -56,17 +56,31 @@ export default function SettingsPage() {
   const [githubOrg, setGithubOrg] = useState<string | null>(null)
   const [serviceCount, setServiceCount] = useState<number>(0)
   const [connected, setConnected] = useState(false)
+  const [archReviewEnabled, setArchReviewEnabled] = useState(false)
+  const [services, setServices] = useState<ApiService[]>([])
 
   useEffect(() => {
     api.services()
-      .then((services: ApiService[]) => {
-        const owner = services.map((s) => extractGitHubOwner(s.repo_url)).find(Boolean) ?? null
+      .then((svcs: ApiService[]) => {
+        setServices(svcs)
+        const owner = svcs.map((s) => extractGitHubOwner(s.repo_url)).find(Boolean) ?? null
         setGithubOrg(owner)
-        setServiceCount(services.length)
-        setConnected(services.length > 0)
+        setServiceCount(svcs.length)
+        setConnected(svcs.length > 0)
+        if (svcs.length > 0) {
+          Promise.all(svcs.map((s) => api.getReviewEnabled(s.name)))
+            .then((results) => setArchReviewEnabled(results.some((r) => r.architectural_review_enabled)))
+            .catch(() => {})
+        }
       })
       .catch(() => setConnected(false))
   }, [])
+
+  const handleArchReviewToggle = async () => {
+    const next = !archReviewEnabled
+    setArchReviewEnabled(next)
+    await Promise.all(services.map((s) => api.setReviewEnabled(s.name, next))).catch(() => {})
+  }
 
   const currentProvider = modelProviders.find((p) => p.id === provider)!
   const orgInitials = githubOrg ? githubOrg.slice(0, 2).toUpperCase() : '??'
@@ -294,6 +308,44 @@ export default function SettingsPage() {
                 </div>
                 {notifyPR ? 'On' : 'Off'}
               </button>
+            </FieldRow>
+          </Section>
+
+          <Section title="Architectural Review">
+            <FieldRow
+              label="Enable Architectural Review"
+              hint="When on, Ripple posts a single consolidated review covering contract drift, architectural violations, security concerns, and performance suggestions. Add an ARCHITECTURE.md to your repos to encode constraints."
+            >
+              <button
+                onClick={handleArchReviewToggle}
+                className="flex items-center gap-2 text-sm font-medium transition-colors"
+                style={{ color: archReviewEnabled ? 'var(--status-healthy-text)' : 'var(--dash-text-secondary)' }}
+              >
+                <div
+                  className="w-10 h-5 rounded-full relative transition-colors"
+                  style={{ background: archReviewEnabled ? '#22C55E' : 'var(--dash-border)' }}
+                >
+                  <div
+                    className="absolute top-0.5 w-4 h-4 rounded-full transition-all"
+                    style={{ background: 'var(--dash-sidebar)', left: archReviewEnabled ? '1.25rem' : '0.125rem' }}
+                  />
+                </div>
+                {archReviewEnabled ? 'On' : 'Off'}
+              </button>
+            </FieldRow>
+
+            <FieldRow
+              label="How it works"
+              hint=""
+            >
+              <div
+                className="text-xs leading-relaxed"
+                style={{ color: 'var(--dash-text-secondary)' }}
+              >
+                Add <code className="font-mono px-1 rounded" style={{ background: 'var(--dash-bg)' }}>ARCHITECTURE.md</code> to any repo.
+                On PRs, Ripple reads it + any learned rules and posts one structured review.
+                Reply <code className="font-mono px-1 rounded" style={{ background: 'var(--dash-bg)' }}>/learn &lt;correction&gt;</code> on a review comment to teach Ripple your architectural patterns.
+              </div>
             </FieldRow>
           </Section>
 

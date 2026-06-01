@@ -77,4 +77,13 @@ export const api = {
     option_label: string
     option_description: string
   }) => post<{ status: string; workflow_id: string | null }>('/api/interrupt/resolve', payload),
+  getReviewEnabled: (serviceName: string) =>
+    get<{ service: string; architectural_review_enabled: boolean }>(
+      `/api/services/${encodeURIComponent(serviceName)}/review-enabled`
+    ),
+  setReviewEnabled: (serviceName: string, enabled: boolean) =>
+    post<{ service: string; architectural_review_enabled: boolean }>(
+      `/api/services/${encodeURIComponent(serviceName)}/review-enabled`,
+      { enabled }
+    ),
 }

@@ -41,6 +41,13 @@ from ripple.workflows.ecosystem_pipeline import EcosystemPipelineWorkflow
 from ripple.workflows.ingest_ecosystem import IngestEcosystemWorkflow
 from ripple.workflows.ingest_service import IngestServiceWorkflow
 from ripple.workflows.post_merge import PostMergeWorkflow
+from ripple.workflows.consolidated_pr_review import ConsolidatedPRReviewWorkflow
+from ripple.workflows.learn_feedback import LearnFromFeedbackWorkflow
+from ripple.activities.review_activities import (
+    post_consolidated_review_activity,
+    process_learn_command_activity,
+    run_architectural_review_activity,
+)
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -62,6 +69,8 @@ async def main() -> None:
             AnalyzePRWorkflow,
             AutoFixConsumerWorkflow,
             PostMergeWorkflow,
+            ConsolidatedPRReviewWorkflow,
+            LearnFromFeedbackWorkflow,
         ],
         activities=[
             clone_repo_activity,
@@ -93,6 +102,8 @@ async def main() -> None:
             record_fix_pr_activity,
             # post-merge cleanup
             mark_producer_merged_activity,
+            # PR review
+            post_consolidated_review_activity,
         ],
     )
 
@@ -104,6 +115,8 @@ async def main() -> None:
             parse_pr_diff_activity,
             assess_consumer_impact_activity,
             write_graph_to_store_activity,
+            run_architectural_review_activity,
+            process_learn_command_activity,
         ],
     )
 

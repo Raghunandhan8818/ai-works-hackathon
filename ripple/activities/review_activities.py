@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from pathlib import Path
 
 import httpx
@@ -70,7 +71,6 @@ async def run_architectural_review_activity(payload: dict) -> dict:
       workspace: str — path to the cloned repo workspace
       diff_content: str — the PR diff text
       repo_full: str — "owner/repo" used as lookup key for learned intents
-      service_name: str — service name for DB lookup
     """
     workspace: str = payload["workspace"]
     diff_content: str = payload["diff_content"]
@@ -201,7 +201,7 @@ async def process_learn_command_activity(payload: dict) -> dict:
         )
         try:
             async with httpx.AsyncClient(timeout=10) as client:
-                await client.post(
+                resp = await client.post(
                     f"https://api.github.com/repos/{repo_full}/issues/{pr_number}/comments",
                     headers={
                         "Authorization": f"Bearer {github_token}",
@@ -209,6 +209,11 @@ async def process_learn_command_activity(payload: dict) -> dict:
                     },
                     json={"body": ack_body},
                 )
+                if resp.status_code not in (200, 201):
+                    logger.warning(
+                        "Failed to post /learn acknowledgement: HTTP %d %s",
+                        resp.status_code, resp.text[:200],
+                    )
         except Exception:
             logger.warning("Failed to post /learn acknowledgement", exc_info=True)
 
@@ -327,7 +332,6 @@ async def post_consolidated_review_activity(payload: dict) -> dict:
     contract_findings: dict = payload.get("contract_findings", {})
     arch_findings: dict = payload.get("arch_findings", {})
 
-    import re
     m = re.search(r"github\.com[/:]([^/]+/[^/]+?)(?:\.git)?$", repo_url)
     if not m:
         return {"success": False, "error": "Cannot parse repo_url"}
@@ -346,6 +350,7 @@ async def post_consolidated_review_activity(payload: dict) -> dict:
                 headers={
                     "Authorization": f"Bearer {github_token}",
                     "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
                 },
                 json={
                     "commit_id": head_sha,

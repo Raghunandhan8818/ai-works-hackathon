@@ -18,6 +18,7 @@ import httpx
 from temporalio import activity
 
 from ripple.rib.enricher.llm_disagreement_detector import detect_llm_disagreements
+from ripple.rib.enricher.semantic_verifier import verify_semantic_disagreement
 from ripple.rib.graph.factory import get_store
 from ripple.rib.graph.schema import (
     ConsumerBelief,
@@ -631,6 +632,30 @@ async def upsert_pr_disagreements_activity(payload: dict) -> int:
         producer_says = fc.get("new_description", "") if fc else ""
         consumer_assumes = fc.get("old_description", "") if fc else ""
 
+        explanation = impact.get("explanation", "")
+
+        # Verify semantic disagreements with a second LLM pass before storing.
+        # Rule-based kinds (FIELD_REMOVED, NULLABLE_CHANGED, TYPE_CHANGED, etc.)
+        # are deterministic and need no verification.
+        if kind == DisagreementKind.SEMANTIC_INTENT_MISMATCH:
+            producer_service = field_fqn.split("::")[0] if "::" in field_fqn else ""
+            verified, verify_reason = await verify_semantic_disagreement(
+                field_fqn=field_fqn,
+                producer_service=producer_service,
+                consumer_service=consumer_service,
+                producer_says=producer_says,
+                consumer_assumes=consumer_assumes,
+                evidence=impact.get("evidence", []),
+            )
+            if not verified:
+                logger.info(
+                    "upsert_pr_disagreements semantic disagreement suppressed "
+                    "field=%s consumer=%s reason=%s",
+                    field_fqn, consumer_service, verify_reason,
+                )
+                continue
+            explanation = f"{explanation} [VERIFIED: {verify_reason}]".strip()
+
         disagreement = Disagreement(
             field_fqn=field_fqn,
             consumer_service=consumer_service,
@@ -639,7 +664,7 @@ async def upsert_pr_disagreements_activity(payload: dict) -> int:
             consumer_assumes=consumer_assumes,
             severity=severity,
             evidence=impact.get("evidence", []),
-            explanation=impact.get("explanation", ""),
+            explanation=explanation,
             detected_at=now,
             resolved_at=None,
             fix_pr_url="",

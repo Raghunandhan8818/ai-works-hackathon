@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -16,8 +17,9 @@ from ripple.rib.indexer.field_finder import find_field_usages
 logger = logging.getLogger(__name__)
 
 _GRAPH_MODEL = os.environ.get("RIPPLE_GRAPH_MODEL", "claude-sonnet-4-6")
-_MAX_FIELDS_IN_PROMPT = int(os.environ.get("RIPPLE_MAX_FIELDS_PROMPT", "60"))
+_MAX_FIELDS_IN_PROMPT = int(os.environ.get("RIPPLE_MAX_FIELDS_PROMPT", "20"))
 _MAX_USAGES_PER_FIELD = int(os.environ.get("RIPPLE_MAX_USAGES_PER_FIELD", "5"))
+_MAX_PARALLEL_BATCHES = int(os.environ.get("RIPPLE_MAX_PARALLEL_BATCHES", "4"))
 
 _SYSTEM_PROMPT = """\
 You are a cross-repo API contract analyst for a microservice ecosystem.
@@ -106,6 +108,10 @@ async def cross_repo_graph_builder_activity(
     # ── Step 4: Single Claude API call for reasoning ──────────────────────────
     graph = await _reason_with_claude(all_fields, all_usages, regex_beliefs)
 
+    # Merge regex-inferred beliefs so they're always stored even if Claude batches failed.
+    # Claude-enriched beliefs take priority; regex fills in the rest.
+    _merge_regex_beliefs(graph, regex_beliefs)
+
     # Write field_usages directly to DB — too large to pass through Temporal payload
     # (get_blast_radius needs these to find consumers during PR analysis)
     _write_usages_to_store(all_usages)
@@ -118,6 +124,32 @@ async def cross_repo_graph_builder_activity(
         len(graph.get("disagreements", [])),
     )
     return graph
+
+
+def _merge_regex_beliefs(graph: dict, regex_beliefs: list) -> None:
+    """Add regex-inferred beliefs that Claude didn't cover. Claude entries win on conflict."""
+    existing = {
+        (b.get("consumer_service"), b.get("field_fqn"))
+        for b in graph.get("consumer_beliefs", [])
+    }
+    for b in regex_beliefs:
+        if (b.consumer_service, b.field_fqn) in existing:
+            continue
+        if not any([b.assumed_type, b.assumed_unit, b.assumed_nullable is not None, b.assumed_format]):
+            continue  # skip empty beliefs
+        graph["consumer_beliefs"].append({
+            "consumer_service": b.consumer_service,
+            "field_fqn": b.field_fqn,
+            "assumed_type": b.assumed_type,
+            "assumed_nullable": b.assumed_nullable,
+            "assumed_unit": b.assumed_unit,
+            "assumed_format": b.assumed_format,
+            "inferred_constraints": b.inferred_constraints,
+            "usage_expressions": b.usage_expressions[:5],
+            "confidence": b.confidence,
+            "from_test": False,
+            "evidence": "",
+        })
 
 
 def _write_usages_to_store(all_usages: list) -> None:
@@ -142,8 +174,79 @@ async def _reason_with_claude(all_fields, all_usages, regex_beliefs) -> dict:
     for u in all_usages:
         usage_by_fqn.setdefault(u.field_fqn, []).append(u)
 
+    # Only analyse fields that consumers actually reference — skip unreferenced fields.
+    # Sort by usage count descending so the most-depended-on fields always go first.
+    fields_with_usages = sorted(
+        [f for f in all_fields if usage_by_fqn.get(f.fqn)],
+        key=lambda f: -len(usage_by_fqn.get(f.fqn, [])),
+    )
+    fields_without_usages = [f for f in all_fields if not usage_by_fqn.get(f.fqn)]
+
+    # Process in batches so no field is silently dropped due to the cap
+    batches = [
+        fields_with_usages[i:i + _MAX_FIELDS_IN_PROMPT]
+        for i in range(0, max(len(fields_with_usages), 1), _MAX_FIELDS_IN_PROMPT)
+    ]
+    logger.info(
+        "_reason_with_claude fields_with_usages=%d fields_without=%d batches=%d",
+        len(fields_with_usages), len(fields_without_usages), len(batches),
+    )
+
+    merged: dict = {"fields": [], "consumer_beliefs": [], "disagreements": []}
+    seen_fqns: set[str] = set()
+
+    # Run batches in parallel with a concurrency cap to avoid rate limits
+    sem = asyncio.Semaphore(_MAX_PARALLEL_BATCHES)
+
+    async def _bounded(batch):
+        async with sem:
+            return await _call_claude_batch(batch, usage_by_fqn, regex_beliefs)
+
+    logger.info("running %d claude batches in parallel (max_concurrent=%d)", len(batches), _MAX_PARALLEL_BATCHES)
+    batch_results = await asyncio.gather(
+        *[_bounded(batch) for batch in batches],
+        return_exceptions=True,
+    )
+
+    for batch_idx, batch_result in enumerate(batch_results):
+        if isinstance(batch_result, Exception):
+            logger.error("claude batch %d failed: %s", batch_idx + 1, batch_result)
+            continue
+
+        # Merge fields (deduplicate by fqn)
+        for f in batch_result.get("fields", []):
+            if f.get("fqn") not in seen_fqns:
+                merged["fields"].append(f)
+                seen_fqns.add(f.get("fqn", ""))
+
+        # Merge beliefs and disagreements (always append — deduplicated at DB upsert)
+        merged["consumer_beliefs"].extend(batch_result.get("consumer_beliefs", []))
+        merged["disagreements"].extend(batch_result.get("disagreements", []))
+
+    # Always include ALL fields — both with and without usages — even if Claude batch failed
+    for f in fields_with_usages + fields_without_usages:
+        if f.fqn not in seen_fqns:
+            merged["fields"].append({
+                "fqn": f.fqn, "name": f.name,
+                "producer_service": f.producer_service,
+                "transport": f.transport.value if hasattr(f.transport, "value") else str(f.transport),
+                "endpoint_or_topic": f.endpoint_or_topic,
+                "field_path": f.field_path,
+                "declared_type": f.declared_type,
+                "nullable": f.nullable,
+                "constraints": [],
+            })
+            seen_fqns.add(f.fqn)
+
+    return merged
+
+
+async def _call_claude_batch(batch_fields, usage_by_fqn, regex_beliefs) -> dict:
+    """Single Claude API call for one batch of fields."""
     field_contexts = []
-    for field in all_fields[:_MAX_FIELDS_IN_PROMPT]:
+    batch_fqns = {f.fqn for f in batch_fields}
+
+    for field in batch_fields:
         usages = usage_by_fqn.get(field.fqn, [])
         prod = [u for u in usages if not u.is_test]
         tests = [u for u in usages if u.is_test]
@@ -187,7 +290,8 @@ async def _reason_with_claude(all_fields, all_usages, regex_beliefs) -> dict:
             "confidence": b.confidence,
         }
         for b in regex_beliefs
-        if any([b.assumed_type, b.assumed_unit, b.assumed_nullable is not None])
+        if b.field_fqn in batch_fqns
+        and any([b.assumed_type, b.assumed_unit, b.assumed_nullable is not None])
     ]
 
     user_prompt = f"""Analyze these API fields and their consumer code usages.
@@ -254,23 +358,23 @@ Analysis rules:
 - Response shape changed (e.g. role was string, now object) → STRUCTURE_CHANGE
 - Only emit disagreements when there is a real conflict — not every field needs one"""
 
-    client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
+    client = anthropic.AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
     try:
-        response = client.messages.create(
+        response = await client.messages.create(
             model=_GRAPH_MODEL,
-            max_tokens=8192,
+            max_tokens=4096,
             system=_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_prompt}],
         )
         raw = response.content[0].text
-        logger.info("Claude API response tokens=%d", response.usage.output_tokens)
-        return _parse_json_response(raw, all_fields, regex_beliefs)
+        logger.info("claude batch response tokens=%d", response.usage.output_tokens)
+        return _parse_json_response(raw)
     except Exception as exc:
-        logger.error("Claude API call failed: %s — falling back to regex-only graph", exc)
-        return _build_fallback_graph(all_fields, regex_beliefs)
+        logger.error("Claude batch call failed: %s — returning empty batch result", exc)
+        return {"fields": [], "consumer_beliefs": [], "disagreements": []}
 
 
-def _parse_json_response(raw: str, all_fields, regex_beliefs) -> dict:
+def _parse_json_response(raw: str) -> dict:
     start = raw.find("{")
     end = raw.rfind("}") + 1
     if start >= 0 and end > start:
@@ -278,41 +382,5 @@ def _parse_json_response(raw: str, all_fields, regex_beliefs) -> dict:
             return json.loads(raw[start:end])
         except json.JSONDecodeError as exc:
             logger.warning("JSON parse failed: %s — snippet: %s", exc, raw[start:start + 200])
-    logger.warning("no JSON found in Claude response — falling back to regex-only graph")
-    return _build_fallback_graph(all_fields, regex_beliefs)
-
-
-def _build_fallback_graph(all_fields, regex_beliefs) -> dict:
-    return {
-        "fields": [
-            {
-                "fqn": f.fqn,
-                "name": f.name,
-                "producer_service": f.producer_service,
-                "transport": f.transport.value,
-                "endpoint_or_topic": f.endpoint_or_topic,
-                "field_path": f.field_path,
-                "declared_type": f.declared_type,
-                "nullable": f.nullable,
-                "constraints": [{"kind": c.kind, "value": c.value, "source": c.source} for c in f.constraints],
-            }
-            for f in all_fields
-        ],
-        "consumer_beliefs": [
-            {
-                "consumer_service": b.consumer_service,
-                "field_fqn": b.field_fqn,
-                "assumed_type": b.assumed_type,
-                "assumed_nullable": b.assumed_nullable,
-                "assumed_unit": b.assumed_unit,
-                "assumed_format": b.assumed_format,
-                "inferred_constraints": b.inferred_constraints,
-                "usage_expressions": b.usage_expressions[:5],
-                "confidence": b.confidence,
-                "from_test": False,
-                "evidence": "",
-            }
-            for b in regex_beliefs
-        ],
-        "disagreements": [],
-    }
+    logger.warning("no JSON found in Claude response — returning empty batch result")
+    return {"fields": [], "consumer_beliefs": [], "disagreements": []}

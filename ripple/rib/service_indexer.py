@@ -10,6 +10,7 @@ from ripple.rib.enricher.belief_enricher import enrich_belief, infer_operations_
 from ripple.rib.enricher.business_context_builder import build_business_context_async
 from ripple.rib.enricher.disagreement_detector import detect_disagreements
 from ripple.rib.enricher.drift_detector import detect_cross_consumer_drift, detect_drift_async
+from ripple.rib.enricher.semantic_verifier import verify_semantic_disagreement
 from ripple.rib.enricher.field_profiler import profile_field_async
 from ripple.rib.graph.schema import FieldNode, FieldUsage, ServiceRecord
 from ripple.rib.graph.store import RippleStore
@@ -158,7 +159,9 @@ async def index_consumer(
         if scip_result.get("scip_path"):
             scip_index = resolve_readable_index(repo_path)
             if scip_index:
-                field_fqns = [f.fqn for f in all_fields]
+                # Exclude fields owned by this service — a service is never a consumer of itself
+                own_prefix_scip = f"{service_name}::"
+                field_fqns = [f.fqn for f in all_fields if not f.fqn.startswith(own_prefix_scip)]
                 _, ts_usages = load_scip_index(scip_index, service_name, field_fqns, repo_path=repo_path)
                 for u in ts_usages:
                     scip_usages_by_field.setdefault(u.field_fqn, []).append(u)
@@ -183,8 +186,12 @@ async def index_consumer(
             )
 
     # ── Multi-strategy grep + tree-sitter (all languages) ──
+    # Skip fields owned by this service — a service is never a consumer of its own fields.
+    own_prefix = f"{service_name}::"
     all_usages: list[FieldUsage] = []
     for field in all_fields:
+        if field.fqn.startswith(own_prefix):
+            continue
         grep_hits = find_field_usages(
             repo_path=repo_path,
             field_name=field.name,
@@ -231,9 +238,39 @@ async def index_consumer(
         counts["beliefs"] += 1
 
         profile = store.get_semantic_profile(belief.field_fqn)
+        semantic_coros = []
+        non_semantic = []
         for d in detect_disagreements(field, profile, enriched):
+            if d.kind.value == "SEMANTIC_INTENT_MISMATCH":
+                semantic_coros.append((d, verify_semantic_disagreement(
+                    field_fqn=d.field_fqn,
+                    producer_service=field.fqn.split("::")[0],
+                    consumer_service=d.consumer_service,
+                    producer_says=d.producer_says,
+                    consumer_assumes=d.consumer_assumes,
+                    evidence=d.evidence,
+                )))
+            else:
+                non_semantic.append(d)
+
+        # Store rule-based disagreements immediately — no verification needed
+        for d in non_semantic:
             store.upsert_disagreement(d)
             counts["disagreements"] += 1
+
+        # Verify semantic ones before storing
+        if semantic_coros:
+            results = await _gather_limited([coro for _, coro in semantic_coros])
+            for (d, _), (verified, reason) in zip(semantic_coros, results):
+                if verified:
+                    d.explanation = reason
+                    store.upsert_disagreement(d)
+                    counts["disagreements"] += 1
+                else:
+                    logger.info(
+                        "semantic_verifier suppressed disagreement field=%s consumer=%s reason=%s",
+                        d.field_fqn, d.consumer_service, reason,
+                    )
 
     # ── Cross-consumer belief divergence detection ──────────────────────────
     # For each field this consumer touches, compare ALL consumers' stored beliefs.

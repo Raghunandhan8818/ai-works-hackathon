@@ -2,20 +2,6 @@ import Link from 'next/link'
 import TopBar from '@/components/dashboard/TopBar'
 import { api, ApiDisagreement } from '@/lib/api'
 
-const severityColor: Record<string, string> = {
-  CRITICAL: '#9B1C1C',
-  HIGH:     '#92400E',
-  MEDIUM:   '#374151',
-  LOW:      '#065F46',
-}
-
-const severityBg: Record<string, string> = {
-  CRITICAL: '#FEF2F2',
-  HIGH:     '#FFFBEB',
-  MEDIUM:   '#F3F4F6',
-  LOW:      '#ECFDF5',
-}
-
 function timeAgo(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime()
   const mins = Math.floor(diff / 60000)
@@ -28,7 +14,6 @@ function timeAgo(iso: string): string {
 function extractFieldName(fqn: string): string {
   const segments = fqn.split('::')
   const lastSegment = segments[segments.length - 1] ?? fqn
-
   if (lastSegment.includes('.')) {
     const fieldPart = lastSegment.split('.').pop() ?? lastSegment
     if (/^\d+$/.test(fieldPart)) {
@@ -40,6 +25,20 @@ function extractFieldName(fqn: string): string {
   return lastSegment.replace(/^(GET|POST|PUT|DELETE|PATCH)\s+\/?/, '')
 }
 
+const severityColor: Record<string, string> = {
+  CRITICAL: 'var(--status-breaking-text)',
+  HIGH:     'var(--status-interrupt-text)',
+  MEDIUM:   'var(--dash-text)',
+  LOW:      'var(--status-healthy-text)',
+}
+
+const severityBg: Record<string, string> = {
+  CRITICAL: 'var(--status-breaking-bg)',
+  HIGH:     'var(--status-interrupt-bg)',
+  MEDIUM:   'var(--dash-bg)',
+  LOW:      'var(--status-healthy-bg)',
+}
+
 function SectionHeader({ title, count, color }: { title: string; count: number; color: string }) {
   return (
     <div className="flex items-center gap-3 mb-3">
@@ -48,11 +47,11 @@ function SectionHeader({ title, count, color }: { title: string; count: number; 
       </span>
       <span
         className="text-xs font-bold px-2 py-0.5 rounded-full tabular-nums"
-        style={{ background: '#F3F4F6', color: '#374151' }}
+        style={{ background: 'var(--dash-bg)', color: 'var(--dash-text-secondary)' }}
       >
         {count}
       </span>
-      <div className="h-px flex-1" style={{ background: '#E8E5DF' }} />
+      <div className="h-px flex-1" style={{ background: 'var(--dash-border)' }} />
     </div>
   )
 }
@@ -63,7 +62,6 @@ export default async function ActivityPage() {
     disagreements = await api.allDisagreements()
   } catch { /* backend not reachable */ }
 
-  // All auto-fix items (unresolved, not requiring human decision) — PR link shown when available
   const autoFixes = disagreements.filter(
     (d) => !d.requires_human_decision && d.resolved_at === null
   )
@@ -86,21 +84,24 @@ export default async function ActivityPage() {
       <div className="flex-1 overflow-y-auto p-6">
         <div className="max-w-3xl">
           {isEmpty ? (
-            <div className="rounded-2xl p-8 text-center" style={{ border: '1px solid #E8E5DF', background: '#F8F7F4' }}>
+            <div
+              className="rounded-2xl p-8 text-center"
+              style={{ border: '1px solid var(--dash-border)', background: 'var(--dash-card)' }}
+            >
               <div className="text-2xl mb-2">✅</div>
-              <div className="text-sm font-medium" style={{ color: '#374151' }}>No active disagreements</div>
-              <div className="text-xs mt-1" style={{ color: '#9CA3AF' }}>All consumer beliefs are aligned with producer contracts</div>
+              <div className="text-sm font-medium" style={{ color: 'var(--dash-text)' }}>No active disagreements</div>
+              <div className="text-xs mt-1" style={{ color: 'var(--dash-text-secondary)' }}>All consumer beliefs are aligned with producer contracts</div>
             </div>
           ) : (
             <div className="space-y-8">
 
-              {/* Section 1: Auto-fixes (PR link shown once raised, spinner while pending) */}
+              {/* Auto-fixes */}
               {autoFixes.length > 0 && (
                 <div>
                   <SectionHeader
                     title="Ripple auto-fixes"
                     count={autoFixes.length}
-                    color={autoFixes.some(d => d.fix_pr_url) ? '#065F46' : '#1D4ED8'}
+                    color={autoFixes.some(d => d.fix_pr_url) ? 'var(--status-healthy-text)' : '#3B82F6'}
                   />
                   <div className="space-y-2">
                     {autoFixes.map((d, i) => {
@@ -110,16 +111,15 @@ export default async function ActivityPage() {
                           key={i}
                           className="flex items-center gap-3 px-4 py-3 rounded-xl"
                           style={{
-                            background: '#FFFFFF',
-                            border: `1px solid ${hasPR ? '#D1FAE5' : '#BFDBFE'}`,
+                            background: 'var(--dash-card)',
+                            border: `1px solid ${hasPR ? 'rgba(63,185,80,0.4)' : 'rgba(59,130,246,0.4)'}`,
                           }}
                         >
-                          {/* Status icon */}
                           <div
                             className="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0"
                             style={{
-                              background: hasPR ? '#ECFDF5' : '#EFF6FF',
-                              color: hasPR ? '#059669' : '#2563EB',
+                              background: hasPR ? 'var(--status-healthy-bg)' : 'rgba(59,130,246,0.1)',
+                              color: hasPR ? 'var(--status-healthy-text)' : '#3B82F6',
                             }}
                           >
                             {hasPR ? (
@@ -133,13 +133,13 @@ export default async function ActivityPage() {
                             )}
                           </div>
 
-                          <code className="text-xs font-semibold flex-shrink-0" style={{ color: '#111827', fontFamily: 'monospace' }}>
+                          <code className="text-xs font-semibold flex-shrink-0" style={{ color: 'var(--dash-text)', fontFamily: 'monospace' }}>
                             {extractFieldName(d.field_fqn)}
                           </code>
-                          <span className="text-xs" style={{ color: '#6B7280' }}>{d.consumer_service}</span>
+                          <span className="text-xs" style={{ color: 'var(--dash-text-secondary)' }}>{d.consumer_service}</span>
                           <span
                             className="text-xs font-medium px-2 py-0.5 rounded-full flex-shrink-0"
-                            style={{ background: severityBg[d.severity] || '#F3F4F6', color: severityColor[d.severity] || '#374151' }}
+                            style={{ background: severityBg[d.severity] || 'var(--dash-bg)', color: severityColor[d.severity] || 'var(--dash-text)' }}
                           >
                             {d.severity}
                           </span>
@@ -152,17 +152,17 @@ export default async function ActivityPage() {
                               target="_blank"
                               rel="noreferrer"
                               className="text-xs font-medium underline flex-shrink-0"
-                              style={{ color: '#2563EB' }}
+                              style={{ color: '#3B82F6' }}
                             >
                               View PR →
                             </a>
                           ) : (
-                            <span className="text-xs flex-shrink-0" style={{ color: '#6B7280' }}>
+                            <span className="text-xs flex-shrink-0" style={{ color: 'var(--dash-text-secondary)' }}>
                               PR pending…
                             </span>
                           )}
 
-                          <span className="text-xs flex-shrink-0" style={{ color: '#9CA3AF' }}>
+                          <span className="text-xs flex-shrink-0" style={{ color: 'var(--dash-text-secondary)' }}>
                             {timeAgo(d.detected_at)}
                           </span>
                         </div>
@@ -172,52 +172,48 @@ export default async function ActivityPage() {
                 </div>
               )}
 
-              {/* Section 2: Awaiting Decision */}
+              {/* Awaiting Decision */}
               {awaitingDecision.length > 0 && (
                 <div>
-                  <SectionHeader title="Needs your input" count={awaitingDecision.length} color="#92400E" />
+                  <SectionHeader title="Needs your input" count={awaitingDecision.length} color="var(--status-interrupt-text)" />
                   <div className="space-y-2">
-                    {awaitingDecision.map((d, i) => {
-                      const col = severityColor[d.severity] || '#374151'
-                      const bg  = severityBg[d.severity]  || '#F3F4F6'
-                      return (
-                        <div
-                          key={i}
-                          className="flex items-center gap-3 px-4 py-3 rounded-xl"
-                          style={{ background: '#FFFFFF', border: '1px solid #FDE68A' }}
+                    {awaitingDecision.map((d, i) => (
+                      <div
+                        key={i}
+                        className="flex items-center gap-3 px-4 py-3 rounded-xl"
+                        style={{ background: 'var(--dash-card)', border: '1px solid var(--status-interrupt-text)' }}
+                      >
+                        <span
+                          className="text-xs font-bold px-2 py-0.5 rounded-full flex-shrink-0"
+                          style={{ background: severityBg[d.severity] || 'var(--dash-bg)', color: severityColor[d.severity] || 'var(--dash-text)' }}
                         >
-                          <span
-                            className="text-xs font-bold px-2 py-0.5 rounded-full flex-shrink-0"
-                            style={{ background: bg, color: col }}
-                          >
-                            {d.severity}
-                          </span>
-                          <code className="text-xs font-semibold flex-shrink-0" style={{ color: '#111827', fontFamily: 'monospace' }}>
-                            {extractFieldName(d.field_fqn)}
-                          </code>
-                          <span className="text-xs" style={{ color: '#6B7280' }}>{d.consumer_service}</span>
-                          <div className="flex-1" />
-                          <Link
-                            href="/dashboard/interrupts"
-                            className="text-xs font-medium underline flex-shrink-0"
-                            style={{ color: '#92400E' }}
-                          >
-                            Go to interrupts →
-                          </Link>
-                          <span className="text-xs flex-shrink-0" style={{ color: '#9CA3AF' }}>
-                            {timeAgo(d.detected_at)}
-                          </span>
-                        </div>
-                      )
-                    })}
+                          {d.severity}
+                        </span>
+                        <code className="text-xs font-semibold flex-shrink-0" style={{ color: 'var(--dash-text)', fontFamily: 'monospace' }}>
+                          {extractFieldName(d.field_fqn)}
+                        </code>
+                        <span className="text-xs" style={{ color: 'var(--dash-text-secondary)' }}>{d.consumer_service}</span>
+                        <div className="flex-1" />
+                        <Link
+                          href="/dashboard/interrupts"
+                          className="text-xs font-medium underline flex-shrink-0"
+                          style={{ color: 'var(--status-interrupt-text)' }}
+                        >
+                          Go to interrupts →
+                        </Link>
+                        <span className="text-xs flex-shrink-0" style={{ color: 'var(--dash-text-secondary)' }}>
+                          {timeAgo(d.detected_at)}
+                        </span>
+                      </div>
+                    ))}
                   </div>
                 </div>
               )}
 
-              {/* Section 3: Resolved */}
+              {/* Resolved */}
               {resolved.length > 0 && (
                 <div>
-                  <SectionHeader title="Resolved" count={resolved.length} color="#374151" />
+                  <SectionHeader title="Resolved" count={resolved.length} color="var(--dash-text)" />
                   <div className="space-y-2">
                     {resolved.map((d, i) => {
                       const hasPR = d.fix_pr_url && d.fix_pr_url !== ''
@@ -226,14 +222,13 @@ export default async function ActivityPage() {
                         <div
                           key={i}
                           className="flex items-center gap-3 px-4 py-3 rounded-xl"
-                          style={{ background: '#F8F7F4', border: '1px solid #E8E5DF' }}
+                          style={{ background: 'var(--dash-card)', border: '1px solid var(--dash-border)' }}
                         >
-                          {/* Icon */}
                           <div
                             className="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0"
                             style={{
-                              background: hasPR ? '#ECFDF5' : '#F3F4F6',
-                              color: hasPR ? '#059669' : '#9CA3AF',
+                              background: hasPR ? 'var(--status-healthy-bg)' : 'var(--dash-bg)',
+                              color: hasPR ? 'var(--status-healthy-text)' : 'var(--dash-text-secondary)',
                             }}
                           >
                             <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
@@ -241,21 +236,20 @@ export default async function ActivityPage() {
                             </svg>
                           </div>
 
-                          <code className="text-xs font-semibold flex-shrink-0" style={{ color: '#111827', fontFamily: 'monospace' }}>
+                          <code className="text-xs font-semibold flex-shrink-0" style={{ color: 'var(--dash-text)', fontFamily: 'monospace' }}>
                             {extractFieldName(d.field_fqn)}
                           </code>
-                          <span className="text-xs" style={{ color: '#6B7280' }}>{d.consumer_service}</span>
+                          <span className="text-xs" style={{ color: 'var(--dash-text-secondary)' }}>{d.consumer_service}</span>
 
                           <div className="flex-1" />
 
-                          {/* PR link or status label */}
                           {hasPR ? (
                             <a
                               href={d.fix_pr_url}
                               target="_blank"
                               rel="noreferrer"
                               className="text-xs font-medium underline flex-shrink-0"
-                              style={{ color: '#2563EB' }}
+                              style={{ color: '#3B82F6' }}
                             >
                               View PR →
                             </a>
@@ -263,15 +257,15 @@ export default async function ActivityPage() {
                             <span
                               className="text-xs font-medium px-2 py-0.5 rounded-full flex-shrink-0"
                               style={{
-                                background: wasAutoFix ? '#FEF2F2' : '#F3F4F6',
-                                color: wasAutoFix ? '#9B1C1C' : '#6B7280',
+                                background: wasAutoFix ? 'var(--status-breaking-bg)' : 'var(--dash-bg)',
+                                color: wasAutoFix ? 'var(--status-breaking-text)' : 'var(--dash-text-secondary)',
                               }}
                             >
                               {wasAutoFix ? 'Fix failed' : 'No fix PR'}
                             </span>
                           )}
 
-                          <span className="text-xs flex-shrink-0" style={{ color: '#9CA3AF' }}>
+                          <span className="text-xs flex-shrink-0" style={{ color: 'var(--dash-text-secondary)' }}>
                             {timeAgo(d.resolved_at!)}
                           </span>
                         </div>

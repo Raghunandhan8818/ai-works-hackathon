@@ -27,17 +27,14 @@ function timeAgo(isoDate: string): string {
 function extractFieldName(fqn: string): string {
   const segments = fqn.split('::')
   const lastSegment = segments[segments.length - 1] ?? fqn
-
   if (lastSegment.includes('.')) {
     const fieldPart = lastSegment.split('.').pop() ?? lastSegment
-    // If it's just an HTTP status code (e.g. "200", "404"), use the endpoint instead
     if (/^\d+$/.test(fieldPart)) {
       const endpoint = segments[2] ?? lastSegment
       return endpoint.replace(/^(GET|POST|PUT|DELETE|PATCH)\s+\/?/, '')
     }
     return fieldPart
   }
-  // Endpoint-level FQN: strip HTTP method prefix and leading slash
   return lastSegment.replace(/^(GET|POST|PUT|DELETE|PATCH)\s+\/?/, '')
 }
 
@@ -54,8 +51,6 @@ function toInterrupt(d: ApiDisagreement): Interrupt {
   }
   const kindDesc = kindLabel[d.kind] ?? d.kind.toLowerCase().replace(/_/g, ' ')
 
-  // Use LLM-generated mitigation options when present.
-  // Only append "I'll fix it manually" if there isn't already a manual/dismiss option.
   const hasManualOption = d.mitigation_options.some(
     (o) => o.id === 'manual' || o.label.toLowerCase().includes('manual') || o.label.toLowerCase().includes('coordinate')
   )
@@ -100,9 +95,6 @@ function toInterrupt(d: ApiDisagreement): Interrupt {
   }
 }
 
-// Extract "METHOD:/base-path" from a field FQN for grouping related interrupts.
-// e.g. "spring-backend::REST::GET /hobbies (for app clients)" → "GET:/hobbies"
-// e.g. "spring-backend::REST::POST /hobbies::request.price" → "POST:/hobbies"
 function basePath(fqn: string): string {
   const segment = fqn.split('::')[2] ?? ''
   const m = segment.match(/^(GET|POST|PUT|DELETE|PATCH)\s+\/?([^/\s?(]+)/)
@@ -110,8 +102,6 @@ function basePath(fqn: string): string {
   return fqn
 }
 
-// Group interrupts from the same PR analysis run that touch the same endpoint.
-// The primary card absorbs related ones so the user decides once for all.
 function groupRelatedInterrupts(interrupts: Interrupt[]): Interrupt[] {
   const result: Interrupt[] = []
   const used = new Set<string>()
@@ -192,11 +182,15 @@ export default async function InterruptsPage() {
           <div className="flex items-center gap-3">
             <span
               className="text-xs font-bold px-3 py-1.5 rounded-full"
-              style={{ background: '#FFFBEB', color: '#92400E', border: '1px solid #FDE68A' }}
+              style={{
+                background: 'var(--status-interrupt-bg)',
+                color: 'var(--status-interrupt-text)',
+                border: '1px solid var(--status-interrupt-text)',
+              }}
             >
               {interrupts.length} awaiting your decision
             </span>
-            <span className="text-sm" style={{ color: '#6B7280' }}>
+            <span className="text-sm" style={{ color: 'var(--dash-text-secondary)' }}>
               {interrupts.length > 0
                 ? `These ${interrupts.length} unresolved disagreement${interrupts.length !== 1 ? 's' : ''} need your attention.`
                 : '90% of fixes are applied silently. No unresolved interrupts right now.'}
@@ -207,18 +201,18 @@ export default async function InterruptsPage() {
         {interrupts.length === 0 ? (
           <div
             className="max-w-3xl rounded-2xl px-6 py-10 flex flex-col items-center gap-3"
-            style={{ background: '#F8F7F4', border: '1px solid #E8E5DF' }}
+            style={{ background: 'var(--dash-card)', border: '1px solid var(--dash-border)' }}
           >
             <div
               className="w-12 h-12 rounded-full flex items-center justify-center"
-              style={{ background: '#ECFDF5', color: '#065F46' }}
+              style={{ background: 'var(--status-healthy-bg)', color: 'var(--status-healthy-text)' }}
             >
               <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
                 <path d="M4 10l4.5 4.5 7.5-8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
             </div>
-            <p className="text-sm font-semibold" style={{ color: '#111827' }}>All clear</p>
-            <p className="text-xs text-center" style={{ color: '#6B7280' }}>
+            <p className="text-sm font-semibold" style={{ color: 'var(--dash-text)' }}>All clear</p>
+            <p className="text-xs text-center" style={{ color: 'var(--dash-text-secondary)' }}>
               No unresolved disagreements require your input. Ripple is handling everything automatically.
             </p>
           </div>
@@ -234,11 +228,14 @@ export default async function InterruptsPage() {
         {resolvedDisagreements.length > 0 && (
           <div className="max-w-3xl mt-10">
             <div className="flex items-center gap-3 mb-4">
-              <div className="h-px flex-1" style={{ background: '#E8E5DF' }} />
-              <span className="text-xs font-semibold tracking-widest uppercase" style={{ color: '#9CA3AF' }}>
-                Resolved
+              <div className="h-px flex-1" style={{ background: 'var(--dash-border)' }} />
+              <span className="text-xs font-semibold tracking-widest uppercase" style={{ color: 'var(--dash-text-secondary)' }}>
+                Resolved <span className="ml-1 px-1.5 py-0.5 rounded-full text-xs font-bold"
+                  style={{ background: 'var(--dash-bg)', color: 'var(--dash-text-secondary)' }}>
+                  {resolvedDisagreements.length}
+                </span>
               </span>
-              <div className="h-px flex-1" style={{ background: '#E8E5DF' }} />
+              <div className="h-px flex-1" style={{ background: 'var(--dash-border)' }} />
             </div>
             <div className="space-y-1.5">
               {resolvedDisagreements.map((d) => {
@@ -249,34 +246,32 @@ export default async function InterruptsPage() {
                   <div
                     key={`${d.field_fqn}::${d.consumer_service}`}
                     className="flex items-center gap-3 px-4 py-2.5 rounded-xl"
-                    style={{ background: '#F8F7F4', border: '1px solid #E8E5DF' }}
+                    style={{ background: 'var(--dash-card)', border: '1px solid var(--dash-border)' }}
                   >
-                    {/* Icon */}
                     <div
                       className="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0"
-                      style={{ background: hasPR ? '#ECFDF5' : '#F3F4F6', color: hasPR ? '#059669' : '#9CA3AF' }}
+                      style={{
+                        background: hasPR ? 'var(--status-healthy-bg)' : 'var(--dash-bg)',
+                        color: hasPR ? 'var(--status-healthy-text)' : 'var(--dash-text-secondary)',
+                      }}
                     >
                       <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
                         <path d="M1.5 5l2.5 2.5 4.5-5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
                       </svg>
                     </div>
 
-                    {/* Field name */}
-                    <code className="text-xs font-semibold flex-shrink-0" style={{ color: '#111827', fontFamily: 'monospace' }}>
+                    <code className="text-xs font-semibold flex-shrink-0" style={{ color: 'var(--dash-text)', fontFamily: 'monospace' }}>
                       {fieldName}
                     </code>
-
-                    {/* Service */}
-                    <span className="text-xs" style={{ color: '#6B7280' }}>{d.consumer_service}</span>
+                    <span className="text-xs" style={{ color: 'var(--dash-text-secondary)' }}>{d.consumer_service}</span>
 
                     <div className="flex-1" />
 
-                    {/* PR link OR status badge */}
                     {hasPR ? (
                       <>
                         <span
                           className="text-xs font-medium px-2 py-0.5 rounded-full flex-shrink-0"
-                          style={{ background: '#ECFDF5', color: '#065F46' }}
+                          style={{ background: 'var(--status-healthy-bg)', color: 'var(--status-healthy-text)' }}
                         >
                           Fix PR raised
                         </span>
@@ -285,7 +280,7 @@ export default async function InterruptsPage() {
                           target="_blank"
                           rel="noreferrer"
                           className="text-xs font-medium underline flex-shrink-0"
-                          style={{ color: '#2563EB' }}
+                          style={{ color: '#3B82F6' }}
                         >
                           View PR →
                         </a>
@@ -294,16 +289,15 @@ export default async function InterruptsPage() {
                       <span
                         className="text-xs font-medium px-2 py-0.5 rounded-full flex-shrink-0"
                         style={{
-                          background: wasAutoFix ? '#FEF2F2' : '#F3F4F6',
-                          color: wasAutoFix ? '#9B1C1C' : '#6B7280',
+                          background: wasAutoFix ? 'var(--status-breaking-bg)' : 'var(--dash-bg)',
+                          color: wasAutoFix ? 'var(--status-breaking-text)' : 'var(--dash-text-secondary)',
                         }}
                       >
                         {wasAutoFix ? 'Fix failed' : 'No fix PR'}
                       </span>
                     )}
 
-                    {/* Time resolved */}
-                    <span className="text-xs flex-shrink-0" style={{ color: '#9CA3AF' }}>
+                    <span className="text-xs flex-shrink-0" style={{ color: 'var(--dash-text-secondary)' }}>
                       {timeAgo(d.resolved_at!)}
                     </span>
                   </div>

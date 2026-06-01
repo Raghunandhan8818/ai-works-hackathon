@@ -369,7 +369,7 @@ _SEVERITY_EMOJI = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": 
 def _build_inline_comments(field_changes: list[dict], impacts: list[dict]) -> list[dict]:
     """
     Build GitHub inline review comments — one per changed field that has a file/line.
-    Each comment is placed at the producer's changed line and lists consumer impacts.
+    Fixed 3-part template: severity header / what changed / which consumers break.
     """
     inline: list[dict] = []
 
@@ -381,48 +381,44 @@ def _build_inline_comments(field_changes: list[dict], impacts: list[dict]) -> li
 
         sev = change.get("severity_hint", "MEDIUM")
         emoji = _SEVERITY_EMOJI.get(sev, "🟡")
-        change_type = change.get("change_type", "SEMANTIC_CHANGE")
+        change_type = change.get("change_type", "UNKNOWN")
+        old_desc = (change.get("old_description", "") or "")[:80]
+        new_desc = (change.get("new_description", "") or "")[:80]
 
-        # Header
-        body_lines = [
-            f"{emoji} **Ripple** · `{change_type}` ({sev})",
-            "",
-            f"**Before:** {change.get('old_description', '—')}",
-            f"**After:** {change.get('new_description', '—')}",
-        ]
+        # Line 1: severity + change type
+        body_lines = [f"{emoji} {sev} · {change_type}"]
 
-        # Consumer impacts for this field — match by field_fqn if present
+        # Line 2: what changed
+        if old_desc and new_desc:
+            body_lines.append(f"{old_desc} → {new_desc}")
+        elif new_desc:
+            body_lines.append(new_desc)
+
+        body_lines.append("")
+
+        # Breaks section: only breaking consumers for this field
         field_fqn = change.get("field_fqn", "")
         field_impacts = [
             i for i in impacts
-            if not field_fqn or i.get("field_fqn", field_fqn) == field_fqn
+            if (not field_fqn or i.get("field_fqn", field_fqn) == field_fqn)
         ] if field_fqn else impacts
 
         breaking = [i for i in field_impacts if i.get("breaks")]
         non_breaking = [i for i in field_impacts if not i.get("breaks")]
 
         if breaking:
-            body_lines.append("")
-            body_lines.append("**Breaking consumers:**")
+            body_lines.append("Breaks:")
             for i in breaking:
                 consumer = i.get("consumer_service", "?")
                 fname = i.get("file_path", "").split("/")[-1]
                 lineno = i.get("line", "?")
-                explanation = i.get("explanation", "")[:120]
-                body_lines.append(f"- 🔴 `{consumer}` → `{fname}:{lineno}` — {explanation}")
-                if i.get("suggested_fix"):
-                    body_lines.append(f"  > **Fix:** {i['suggested_fix'][:200]}")
+                explanation = (i.get("explanation", "") or "")[:100]
+                body_lines.append(f"· {consumer} ({fname}:{lineno}) — {explanation}")
         elif non_breaking:
-            body_lines.append("")
-            body_lines.append("**Non-breaking consumer impacts:**")
-            for i in non_breaking[:3]:
-                consumer = i.get("consumer_service", "?")
-                explanation = i.get("explanation", "")[:120]
-                body_lines.append(f"- 🟡 `{consumer}` — {explanation}")
-
-        if not breaking and not non_breaking:
-            body_lines.append("")
-            body_lines.append("*No consumers of this field found in the knowledge graph.*")
+            services = ", ".join(sorted({i.get("consumer_service", "?") for i in non_breaking}))
+            body_lines.append(f"· Monitored: {services}")
+        else:
+            body_lines.append("· No known consumers in knowledge graph")
 
         inline.append({
             "path": file_path,
@@ -444,79 +440,38 @@ def _format_review_comment(
     impacts: list[dict],
     fix_results: list[dict] | None = None,
 ) -> str:
-    """Formats the top-level PR review body (summary). Inline comments carry the per-field detail."""
+    """Top-level PR review body: summary line + consumer PR links only."""
     if not field_changes:
         return (
             "## Ripple Contract Analysis\n\n"
-            "✅ No semantic contract changes detected in this PR. "
-            "Safe to merge from a consumer-compatibility perspective.\n\n"
+            "✅ No contract changes detected. Safe to merge.\n\n"
             "*[Ripple — semantic contract firewall]*"
         )
 
     breaking = [i for i in impacts if i.get("breaks")]
     non_breaking = [i for i in impacts if not i.get("breaks")]
-
     summary_emoji = "🔴" if breaking else ("🟡" if non_breaking else "✅")
+
     lines: list[str] = [
         "## Ripple Contract Analysis\n",
-        f"{summary_emoji} **{len(field_changes)} field contract(s) changed** "
-        f"in `{producer_service}` · "
-        f"**{len(breaking)} breaking** / {len(non_breaking)} non-breaking consumer impacts\n",
-        "> Inline annotations on the changed lines show per-field impact details.\n",
+        f"{summary_emoji} **{len(breaking)} breaking contract change(s)** in `{producer_service}`\n",
     ]
 
-    # Changed fields summary table
-    lines.append("| Field | Change | Severity |")
-    lines.append("|-------|--------|----------|")
-    for change in field_changes:
-        sev = change.get("severity_hint", "MEDIUM")
-        emoji = _SEVERITY_EMOJI.get(sev, "🟡")
-        lines.append(
-            f"| `{change['field_name']}` "
-            f"| {change['change_type']} "
-            f"| {emoji} {sev} |"
-        )
-
-    if breaking:
-        lines.append("\n---\n### 🔴 Breaking Consumer Impacts\n")
-        lines.append("| Consumer | File | Line | Issue |")
-        lines.append("|----------|------|------|-------|")
-        for impact in breaking:
-            sev = impact.get("severity", "HIGH")
-            fname = impact.get("file_path", "").split("/")[-1]
-            line_no = impact.get("line", "?")
-            explanation = impact.get("explanation", "")[:100]
-            consumer = impact.get("consumer_service", "?")
-            lines.append(f"| `{consumer}` | `{fname}` | {line_no} | {explanation} |")
-
+    successful_fixes = [r for r in (fix_results or []) if r.get("pr_url")]
+    if successful_fixes:
+        lines.append("**Auto-fix PRs raised:**")
+        for r in successful_fixes:
+            consumer = r.get("consumer_service", "?")
+            pr_url = r.get("pr_url", "")
+            lines.append(f"· `{consumer}` → {pr_url}")
         lines.append("")
-        for impact in breaking:
-            if impact.get("suggested_fix"):
-                consumer = impact.get("consumer_service", "?")
-                lines.append(f"**Fix for `{consumer}`:** {impact['suggested_fix']}")
 
-    elif non_breaking:
-        lines.append("\n---\n### 🟡 Non-Breaking Impacts\n")
-        for impact in non_breaking:
-            consumer = impact.get("consumer_service", "?")
-            explanation = impact.get("explanation", "")
-            lines.append(f"- `{consumer}`: {explanation}")
+    failed_fixes = [r for r in (fix_results or []) if not r.get("pr_url")]
+    if failed_fixes:
+        lines.append("**Could not auto-fix (manual review needed):**")
+        for r in failed_fixes:
+            lines.append(f"· `{r.get('consumer_service', '?')}`: {r.get('error', 'unknown error')}")
+        lines.append("")
 
-    # Auto-fix summary
-    if fix_results:
-        successful_fixes = [r for r in fix_results if r.get("pr_url")]
-        failed_fixes = [r for r in fix_results if not r.get("pr_url")]
-        if successful_fixes:
-            lines.append("\n---\n### 🤖 Auto-Fix PRs Raised\n")
-            for r in successful_fixes:
-                consumer = r.get("consumer_service", "?")
-                pr_url = r.get("pr_url", "")
-                lines.append(f"- **`{consumer}`** → {pr_url}")
-        if failed_fixes:
-            lines.append("\n**Could not auto-fix (manual review needed):**")
-            for r in failed_fixes:
-                lines.append(f"- `{r.get('consumer_service', '?')}`: {r.get('error', 'unknown error')}")
-
-    lines.append("\n---\n*[Ripple — semantic contract firewall](https://github.com/)*")
-
+    lines.append("*[Ripple — semantic contract firewall]*")
     return "\n".join(lines)

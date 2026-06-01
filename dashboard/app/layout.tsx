@@ -32,9 +32,14 @@ export default function RootLayout({
   return (
     <html
       lang="en"
+      suppressHydrationWarning
       className={`${geistSans.variable} ${geistMono.variable} ${syne.variable} h-full antialiased`}
     >
-      <body className="min-h-full">{children}</body>
+      <body className="min-h-full">
+        {/* Inject theme before first paint to avoid flash */}
+        <script dangerouslySetInnerHTML={{ __html: `(function(){try{var t=localStorage.getItem('ripple-theme');if(t==='dark')document.documentElement.classList.add('dark');}catch(e){}})();` }} />
+        {children}
+      </body>
     </html>
   );
 }

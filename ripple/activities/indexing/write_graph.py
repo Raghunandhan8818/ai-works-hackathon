@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 
 from temporalio import activity
 
+from ripple.rib.enricher.disagreement_detector import detect_disagreements
+from ripple.rib.enricher.semantic_verifier import verify_semantic_disagreement
 from ripple.rib.graph.factory import get_store
 from ripple.rib.graph.schema import (
     ConsumerBelief,
@@ -83,7 +86,7 @@ async def write_graph_to_store_activity(graph: dict, services: list[dict]) -> di
             errors.append(msg)
             logger.warning("write_graph skip belief %s", msg)
 
-    # Write Disagreements
+    # Write Disagreements from Claude's graph output
     for raw in graph.get("disagreements", []):
         try:
             disagreement = _parse_disagreement(raw, now)
@@ -94,9 +97,13 @@ async def write_graph_to_store_activity(graph: dict, services: list[dict]) -> di
             errors.append(msg)
             logger.warning("write_graph skip disagreement %s", msg)
 
+    # Run drift detection against ALL stored beliefs in DB for complete coverage
+    drift_count = await _run_drift_detection(store, now)
+    disagreements_written += drift_count
+
     logger.info(
-        "write_graph done fields=%d beliefs=%d disagreements=%d errors=%d",
-        fields_written, beliefs_written, disagreements_written, len(errors),
+        "write_graph done fields=%d beliefs=%d disagreements=%d (drift=%d) errors=%d",
+        fields_written, beliefs_written, disagreements_written, drift_count, len(errors),
     )
     return {
         "fields_written": fields_written,
@@ -104,6 +111,76 @@ async def write_graph_to_store_activity(graph: dict, services: list[dict]) -> di
         "disagreements_written": disagreements_written,
         "errors": errors[:20],
     }
+
+
+async def _run_drift_detection(store, now: datetime) -> int:
+    """
+    Load all stored fields + consumer beliefs from DB and run rule-based drift detection.
+    Uses blast radius to get per-field beliefs for all consumers.
+    Idempotent — safe to re-run on every pipeline ingestion.
+    """
+    written = 0
+    semantic_pending: list[tuple[Disagreement, object]] = []
+
+    all_fields = store.get_all_fields()
+    logger.info("drift_detection scanning %d fields", len(all_fields))
+
+    for field in all_fields:
+        producer = field.fqn.split("::")[0] if "::" in field.fqn else ""
+        profile = store.get_semantic_profile(field.fqn)
+
+        try:
+            blast = store.get_blast_radius(field.fqn)
+        except Exception as exc:
+            logger.warning("drift_detection blast_radius failed field=%s err=%s", field.fqn, exc)
+            continue
+
+        for entry in blast.consumers:
+            if not entry.belief:
+                continue
+            consumer_service = entry.consumer_service
+            if producer and consumer_service == producer:
+                continue  # skip self-referential
+
+            for d in detect_disagreements(field, profile, entry.belief):
+                if d.kind.value == "SEMANTIC_INTENT_MISMATCH":
+                    semantic_pending.append((d, verify_semantic_disagreement(
+                        field_fqn=d.field_fqn,
+                        producer_service=producer,
+                        consumer_service=consumer_service,
+                        producer_says=d.producer_says,
+                        consumer_assumes=d.consumer_assumes,
+                        evidence=d.evidence,
+                    )))
+                else:
+                    try:
+                        store.upsert_disagreement(d)
+                        written += 1
+                    except Exception as exc:
+                        logger.warning("drift_detection upsert failed field=%s err=%s", field.fqn, exc)
+
+    # Verify all semantic disagreements in parallel
+    if semantic_pending:
+        coros = [coro for _, coro in semantic_pending]
+        results = await asyncio.gather(*coros, return_exceptions=True)
+        for (d, _), result in zip(semantic_pending, results):
+            if isinstance(result, Exception):
+                logger.warning("semantic_verifier error field=%s: %s — keeping", d.field_fqn, result)
+                verified, reason = True, f"Verification error — kept"
+            else:
+                verified, reason = result
+            if verified:
+                d.explanation = f"{d.explanation} [VERIFIED: {reason}]".strip()
+                try:
+                    store.upsert_disagreement(d)
+                    written += 1
+                except Exception as exc:
+                    logger.warning("drift_detection semantic upsert failed field=%s err=%s", d.field_fqn, exc)
+            else:
+                logger.info("drift_detection suppressed semantic field=%s reason=%s", d.field_fqn, reason)
+
+    logger.info("drift_detection disagreements_written=%d", written)
+    return written
 
 
 def _parse_field(raw: dict) -> FieldNode:

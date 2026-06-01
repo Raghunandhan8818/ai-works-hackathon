@@ -40,6 +40,52 @@ class InterruptResolveRequest(BaseModel):
 
 logger = logging.getLogger(__name__)
 
+
+def _deduplicate_disagreements(items):
+    """
+    Collapse endpoint-level duplicates into one logical interrupt per
+    (producer_service, canonical_field_name, consumer_service, kind).
+
+    Also removes self-referential disagreements (consumer == the service
+    that owns the field — e.g. recommendation-service flagging its own fields).
+    """
+    from collections import defaultdict
+    from ripple.rib.graph.schema import Severity
+
+    _SEV = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1}
+
+    def _producer(fqn: str) -> str:
+        return fqn.split("::")[0] if "::" in fqn else ""
+
+    def _base_field(fqn: str) -> str:
+        parts = fqn.split("::")
+        raw = parts[-1] if parts else fqn
+        for prefix in ("response.200.", "response.201.", "response.400.",
+                        "response.201.", "request."):
+            if raw.startswith(prefix):
+                return raw[len(prefix):]
+        return raw
+
+    best: dict = {}
+    for d in items:
+        producer = _producer(d.field_fqn)
+        # Drop self-referential: consumer flagging its own produced fields
+        if producer and d.consumer_service == producer:
+            continue
+        # Drop non-standard FQNs that don't have a service prefix (cross-repo artefacts)
+        if not producer:
+            continue
+        base = _base_field(d.field_fqn)
+        key = (producer, base, d.consumer_service, d.kind.value)
+        if key not in best or _SEV.get(d.severity.value, 0) > _SEV.get(best[key].severity.value, 0):
+            best[key] = d
+
+    # Sort: CRITICAL first, then HIGH, then by field name
+    return sorted(
+        best.values(),
+        key=lambda d: (-_SEV.get(d.severity.value, 0), d.field_fqn),
+    )
+
 app = FastAPI(title="Ripple Intelligence Backend", version="0.2.0")
 
 app.add_middleware(
@@ -94,7 +140,7 @@ def blast_radius(field_fqn: str):
 def list_all_disagreements():
     store = get_store()
     items = store.get_all_disagreements()
-    return [d.model_dump() for d in items]
+    return [d.model_dump() for d in _deduplicate_disagreements(items)]
 
 
 @app.get("/disagreements")
@@ -103,9 +149,10 @@ def list_disagreements(field_fqn: Optional[str] = None):
     if field_fqn:
         items = store.get_disagreements_for_field(field_fqn)
         items = [d for d in items if d.resolved_at is None]
+        return [d.model_dump() for d in items]
     else:
         items = store.get_active_disagreements()
-    return [d.model_dump() for d in items]
+        return [d.model_dump() for d in _deduplicate_disagreements(items)]
 
 
 @app.post("/api/interrupt/resolve")
@@ -201,7 +248,8 @@ async def resolve_interrupt(request: InterruptResolveRequest):
 
     from ripple.workflows.auto_fix_consumer import AutoFixConsumerWorkflow
     client = await get_temporal_client()
-    workflow_id = f"manual-fix-{resolved_consumer_service[:20]}-{request.field_fqn[:20]}"
+    field_slug = request.field_fqn.split("::")[-1][:30].replace("/", "-")
+    workflow_id = f"manual-fix-{resolved_consumer_service[:20]}-{field_slug}"
 
     handle = await client.start_workflow(
         AutoFixConsumerWorkflow.run,

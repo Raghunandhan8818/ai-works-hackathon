@@ -33,6 +33,24 @@
   --status-healed-bg: #ECFDF5;
 }
 
+/* ── Dark mode overrides ── */
+html.dark {
+  --dash-bg: #0D1117;
+  --dash-sidebar: #161B22;
+  --dash-card: #1C2128;
+  --dash-border: rgba(240,246,252,0.1);
+  --dash-text: #E6EDF3;
+  --dash-text-secondary: #8B949E;
+  --status-healthy-text: #3FB950;
+  --status-healthy-bg: rgba(63,185,80,0.1);
+  --status-interrupt-text: #D29922;
+  --status-interrupt-bg: rgba(210,153,34,0.1);
+  --status-breaking-text: #F85149;
+  --status-breaking-bg: rgba(248,81,73,0.1);
+  --status-healed-text: #3FB950;
+  --status-healed-bg: rgba(63,185,80,0.1);
+}
+
 /* ── Base resets ── */
 *, *::before, *::after {
   box-sizing: border-box;

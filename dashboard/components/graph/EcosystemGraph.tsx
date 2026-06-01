@@ -122,10 +122,10 @@ export default function EcosystemGraph({ onNodeSelect, nodes: propNodes, edges: 
   return (
     <div
       className="w-full h-full rounded-2xl overflow-hidden relative"
-      style={{ border: '1px solid #E8E5DF', background: '#FAFAF8' }}
+      style={{ border: '1px solid var(--dash-border)', background: 'var(--dash-card)' }}
     >
       {isLoading && (
-        <div className="absolute inset-0 flex items-center justify-center z-10" style={{ background: '#FAFAF8' }}>
+        <div className="absolute inset-0 flex items-center justify-center z-10" style={{ background: 'var(--dash-card)' }}>
           <span className="text-sm font-mono" style={{ color: '#9CA3AF' }}>Loading ecosystem graph…</span>
         </div>
       )}

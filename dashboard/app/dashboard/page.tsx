@@ -11,52 +11,92 @@ import { GraphNode, GraphEdge } from '@/lib/types'
 
 function buildGraph(
   services: ApiService[],
-  disagreements: ApiDisagreement[]
+  activeDisagreements: ApiDisagreement[],   // unresolved only — drives edge colour
+  allDisagreements: ApiDisagreement[],       // full history — drives topology
 ): { nodes: GraphNode[]; edges: GraphEdge[] } {
-  const producers = services.filter((s) => s.role === 'producer' || s.role === 'both')
-  const consumers = services.filter((s) => s.role === 'consumer' || s.role === 'both')
+  // Build relationship map from ALL disagreements (including resolved) so edges
+  // survive even when everything is healthy / resolved.
+  const pairMap = new Map<string, number>()
+  const producerSet = new Set<string>()
+  const consumerSet = new Set<string>()
 
-  const breakingConsumers = new Set(disagreements.map((d) => d.consumer_service))
+  for (const d of allDisagreements) {
+    const producer = d.field_fqn.split('::')[0]
+    const consumer = d.consumer_service
+    if (!producer || producer === consumer) continue
+    producerSet.add(producer)
+    consumerSet.add(consumer)
+    const key = `${producer}→${consumer}`
+    pairMap.set(key, (pairMap.get(key) ?? 0) + 1)
+  }
 
-  // Position: producers on left column, consumers on right
+  // Augment sets from service roles
+  for (const s of services) {
+    if (s.role === 'producer' || s.role === 'both') producerSet.add(s.name)
+    if (s.role === 'consumer' || s.role === 'both') consumerSet.add(s.name)
+  }
+
+  // Ensure every known producer is connected to every known consumer as a healthy
+  // baseline — fills gaps when disagreements were attributed differently or don't exist yet.
+  for (const producer of producerSet) {
+    for (const consumer of consumerSet) {
+      if (producer === consumer) continue
+      const key = `${producer}→${consumer}`
+      if (!pairMap.has(key)) pairMap.set(key, 0)
+    }
+  }
+
+  // Active (unresolved) disagreements determine edge colour and node status
+  const activeBreakingConsumers = new Set(activeDisagreements.map((d) => d.consumer_service))
+  const activePairs = new Set(
+    activeDisagreements.map((d) => `${d.field_fqn.split('::')[0]}→${d.consumer_service}`)
+  )
+
+  const pureProducers = services.filter((s) => producerSet.has(s.name) && !consumerSet.has(s.name))
+  const pureConsumers = services.filter((s) => consumerSet.has(s.name) && !producerSet.has(s.name))
+  const both = services.filter((s) => producerSet.has(s.name) && consumerSet.has(s.name))
+  const neither = services.filter((s) => !producerSet.has(s.name) && !consumerSet.has(s.name))
+
+  // Centre groups vertically so nodes spread nicely rather than stacking at y=80
+  const centredY = (i: number, total: number, canvasH = 500) => {
+    if (total === 1) return canvasH / 2
+    const spacing = Math.min(180, (canvasH - 80) / (total - 1))
+    const groupH = (total - 1) * spacing
+    return (canvasH - groupH) / 2 + i * spacing
+  }
+
+  const seenNodes = new Set<string>()
   const nodes: GraphNode[] = []
-  producers.forEach((s, i) => {
-    nodes.push({
-      id: s.name,
-      serviceId: s.name,
-      label: s.name,
-      status: breakingConsumers.has(s.name) ? 'breaking' : 'healthy',
-      position: { x: 100, y: 100 + i * 180 },
-    })
-  })
-  consumers.forEach((s, i) => {
-    nodes.push({
-      id: s.name,
-      serviceId: s.name,
-      label: s.name,
-      status: breakingConsumers.has(s.name) ? 'breaking' : 'healthy',
-      position: { x: 500, y: 100 + i * 180 },
-    })
-  })
 
-  // Edges: producer → consumer for each pair
-  const edges: GraphEdge[] = []
-  producers.forEach((p) => {
-    consumers.forEach((c) => {
-      // Count consumer-attributed + knowledge-gap (producer_service == consumer_service) disagreements
-      const edgeDisagreements = disagreements.filter(
-        (d) => d.consumer_service === c.name || d.consumer_service === p.name
-      )
-      const hasBreaking = edgeDisagreements.length > 0
-      edges.push({
-        id: `${p.name}-${c.name}`,
-        source: p.name,
-        target: c.name,
-        edgeType: hasBreaking ? 'breaking' : 'healthy',
-        label: hasBreaking ? `${edgeDisagreements.length} disagreement(s)` : undefined,
-      })
+  const addNode = (s: ApiService, x: number, i: number, total: number) => {
+    if (seenNodes.has(s.name)) return
+    seenNodes.add(s.name)
+    nodes.push({
+      id: s.name,
+      serviceId: s.name,
+      label: s.name,
+      status: activeBreakingConsumers.has(s.name) ? 'breaking' : 'healthy',
+      position: { x, y: centredY(i, total) },
     })
-  })
+  }
+
+  pureProducers.forEach((s, i) => addNode(s, 80,  i, pureProducers.length))
+  both.forEach((s, i)          => addNode(s, 340, i, both.length))
+  pureConsumers.forEach((s, i) => addNode(s, 600, i, pureConsumers.length))
+  neither.forEach((s, i)       => addNode(s, 340, both.length + i, both.length + neither.length))
+
+  const edges: GraphEdge[] = []
+  for (const [key] of pairMap) {
+    const [producer, consumer] = key.split('→')
+    if (!seenNodes.has(producer) || !seenNodes.has(consumer)) continue
+    const isBreaking = activePairs.has(key)
+    edges.push({
+      id: `${producer}-${consumer}`,
+      source: producer,
+      target: consumer,
+      edgeType: isBreaking ? 'breaking' : 'healthy',
+    })
+  }
 
   return { nodes, edges }
 }
@@ -70,15 +110,16 @@ export default function DashboardPage() {
   const [subtitle, setSubtitle] = useState('Loading…')
 
   useEffect(() => {
-    Promise.all([api.services(), api.disagreements()])
-      .then(([services, disagreements]) => {
+    Promise.all([api.services(), api.disagreements(), api.allDisagreements()])
+      .then(([services, activeDisagreements, allDisagreements]) => {
         setApiServices(services)
-        setApiDisagreements(disagreements)
-        const { nodes, edges } = buildGraph(services, disagreements)
+        setApiDisagreements(activeDisagreements)
+        const { nodes, edges } = buildGraph(services, activeDisagreements, allDisagreements)
         setGraphNodes(nodes)
         setGraphEdges(edges)
+        const totalFields = services.reduce((s, svc) => s + svc.field_count, 0)
         setSubtitle(
-          `${services.length} services · ${services.reduce((s, svc) => s + svc.field_count, 0)} fields indexed · ${disagreements.length} disagreements`
+          `${services.length} services · ${totalFields} fields indexed · ${allDisagreements.length} disagreements`
         )
       })
       .catch(() => setSubtitle('Backend unavailable'))

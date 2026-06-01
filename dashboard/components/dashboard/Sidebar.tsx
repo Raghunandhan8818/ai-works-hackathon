@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { useEffect, useState } from 'react'
 import { usePathname } from 'next/navigation'
-import { api } from '@/lib/api'
+import { api, ApiService } from '@/lib/api'
 
 const baseNavItems = [
   {
@@ -72,9 +72,15 @@ const baseNavItems = [
   },
 ]
 
+function extractGitHubOwner(repoUrl: string): string | null {
+  const m = repoUrl.match(/github\.com\/([^/]+)/)
+  return m ? m[1] : null
+}
+
 export default function Sidebar() {
   const pathname = usePathname()
   const [activeInterruptCount, setActiveInterruptCount] = useState<number | null>(null)
+  const [orgInfo, setOrgInfo] = useState<{ name: string; initials: string; count: number } | null>(null)
 
   useEffect(() => {
     api.disagreements()
@@ -82,7 +88,21 @@ export default function Sidebar() {
         const count = d.filter((x) => x.requires_human_decision && !x.resolved_at).length
         setActiveInterruptCount(count)
       })
-      .catch(() => { /* backend not reachable */ })
+      .catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    api.services()
+      .then((services: ApiService[]) => {
+        const owner = services.map((s) => extractGitHubOwner(s.repo_url)).find(Boolean) ?? null
+        if (owner) {
+          const initials = owner.slice(0, 2).toUpperCase()
+          setOrgInfo({ name: owner, initials, count: services.length })
+        } else {
+          setOrgInfo({ name: 'GitHub', initials: 'GH', count: services.length })
+        }
+      })
+      .catch(() => {})
   }, [])
 
   const isActive = (href: string, exact?: boolean) => {
@@ -95,14 +115,14 @@ export default function Sidebar() {
       className="fixed left-0 top-0 bottom-0 flex flex-col z-40"
       style={{
         width: 240,
-        background: '#FFFFFF',
-        borderRight: '1px solid #E8E5DF',
+        background: 'var(--dash-sidebar)',
+        borderRight: '1px solid var(--dash-border)',
       }}
     >
       {/* Logo */}
       <div
         className="flex items-center gap-2.5 px-5 py-5"
-        style={{ borderBottom: '1px solid #E8E5DF' }}
+        style={{ borderBottom: '1px solid var(--dash-border)' }}
       >
         <svg width="26" height="26" viewBox="0 0 28 28" fill="none" aria-hidden>
           <circle cx="14" cy="14" r="13" stroke="#FF5A1F" strokeWidth="2" />
@@ -112,7 +132,7 @@ export default function Sidebar() {
         </svg>
         <span
           className="text-lg font-bold"
-          style={{ fontFamily: 'var(--font-syne)', color: '#111827' }}
+          style={{ fontFamily: 'var(--font-syne)', color: 'var(--dash-text)' }}
         >
           Ripple
         </span>
@@ -132,18 +152,18 @@ export default function Sidebar() {
               className="flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-150 group"
               style={{
                 background: active ? 'rgba(255,90,31,0.08)' : 'transparent',
-                color: active ? '#FF5A1F' : '#6B7280',
+                color: active ? '#FF5A1F' : 'var(--dash-text-secondary)',
               }}
             >
               <span
                 className="flex-shrink-0"
-                style={{ color: active ? '#FF5A1F' : '#9CA3AF' }}
+                style={{ color: active ? '#FF5A1F' : 'var(--dash-text-secondary)' }}
               >
                 {item.icon}
               </span>
               <span
                 className="text-sm font-medium flex-1"
-                style={{ color: active ? '#FF5A1F' : '#374151' }}
+                style={{ color: active ? '#FF5A1F' : 'var(--dash-text)' }}
               >
                 {item.label}
               </span>
@@ -163,24 +183,33 @@ export default function Sidebar() {
       {/* Bottom: org info */}
       <div
         className="px-4 py-4"
-        style={{ borderTop: '1px solid #E8E5DF' }}
+        style={{ borderTop: '1px solid var(--dash-border)' }}
       >
-        <div className="flex items-center gap-3">
-          <div
-            className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0"
-            style={{ background: '#FF5A1F', color: '#FFFFFF' }}
-          >
-            SP
+        {orgInfo ? (
+          <div className="flex items-center gap-3">
+            <div
+              className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0"
+              style={{ background: '#FF5A1F', color: '#FFFFFF' }}
+            >
+              {orgInfo.initials}
+            </div>
+            <div className="min-w-0">
+              <p className="text-sm font-medium truncate" style={{ color: 'var(--dash-text)' }}>
+                {orgInfo.name}
+              </p>
+              <p className="text-xs truncate" style={{ color: 'var(--dash-text-secondary)' }}>
+                {orgInfo.count} service{orgInfo.count !== 1 ? 's' : ''} · GitHub
+              </p>
+            </div>
           </div>
-          <div className="min-w-0">
-            <p className="text-sm font-medium truncate" style={{ color: '#111827' }}>
-              Spring PetClinic
-            </p>
-            <p className="text-xs truncate" style={{ color: '#6B7280' }}>
-              6 services · GitHub
-            </p>
+        ) : (
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-full flex-shrink-0" style={{ background: 'var(--dash-border)' }} />
+            <div className="min-w-0">
+              <div className="h-3 w-24 rounded" style={{ background: 'var(--dash-border)' }} />
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </aside>
   )

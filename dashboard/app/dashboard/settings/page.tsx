@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import TopBar from '@/components/dashboard/TopBar'
-import { api, ApiService } from '@/lib/api'
+import { api } from '@/lib/api'
 
 const modelProviders = [
   { id: 'anthropic', label: 'Anthropic Claude', models: ['claude-opus-4-7', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001'] },
@@ -57,29 +57,31 @@ export default function SettingsPage() {
   const [serviceCount, setServiceCount] = useState<number>(0)
   const [connected, setConnected] = useState(false)
   const [archReviewEnabled, setArchReviewEnabled] = useState(false)
-  const [services, setServices] = useState<ApiService[]>([])
 
   useEffect(() => {
     api.services()
       .then((svcs: ApiService[]) => {
-        setServices(svcs)
         const owner = svcs.map((s) => extractGitHubOwner(s.repo_url)).find(Boolean) ?? null
         setGithubOrg(owner)
         setServiceCount(svcs.length)
         setConnected(svcs.length > 0)
-        if (svcs.length > 0) {
-          Promise.all(svcs.map((s) => api.getReviewEnabled(s.name)))
-            .then((results) => setArchReviewEnabled(results.some((r) => r.architectural_review_enabled)))
-            .catch(() => {})
-        }
       })
       .catch(() => setConnected(false))
+
+    api.getReviewEnabled()
+      .then((r) => setArchReviewEnabled(r.architectural_review_enabled))
+      .catch(() => {})
   }, [])
 
   const handleArchReviewToggle = async () => {
     const next = !archReviewEnabled
     setArchReviewEnabled(next)
-    await Promise.all(services.map((s) => api.setReviewEnabled(s.name, next))).catch(() => {})
+    try {
+      await api.setReviewEnabled(next)
+    } catch (err) {
+      console.error('[Ripple] Failed to persist architectural review toggle:', err)
+      setArchReviewEnabled(!next)
+    }
   }
 
   const currentProvider = modelProviders.find((p) => p.id === provider)!

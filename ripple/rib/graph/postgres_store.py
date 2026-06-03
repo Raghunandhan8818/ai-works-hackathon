@@ -955,6 +955,23 @@ class PostgresStore:
             ).fetchone()
         return bool(row["architectural_review_enabled"]) if row else False
 
+    def get_architectural_review_globally_enabled(self) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT value FROM global_settings WHERE key = 'architectural_review_enabled'"
+            ).fetchone()
+        return row["value"] == "true" if row else False
+
+    def set_architectural_review_globally_enabled(self, enabled: bool) -> None:
+        value = "true" if enabled else "false"
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO global_settings (key, value) VALUES ('architectural_review_enabled', %s)"
+                " ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+                (value,),
+            )
+            conn.commit()
+
 
 def _json_list(value: Any) -> list:
     if value is None:

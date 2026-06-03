@@ -277,17 +277,32 @@ async def resolve_interrupt(request: InterruptResolveRequest):
     return {"status": "fix_triggered", "workflow_id": handle.id}
 
 
+@app.get("/api/settings/review-enabled")
+async def get_review_enabled_global():
+    store = get_store()
+    enabled = store.get_architectural_review_globally_enabled()
+    return {"architectural_review_enabled": enabled}
+
+
+@app.post("/api/settings/review-enabled")
+async def set_review_enabled_global(body: ServiceReviewSettingRequest):
+    store = get_store()
+    store.set_architectural_review_globally_enabled(body.enabled)
+    return {"architectural_review_enabled": body.enabled}
+
+
+# Keep per-service endpoints for backward compat
 @app.get("/api/services/{service_name}/review-enabled")
 async def get_review_enabled(service_name: str):
     store = get_store()
-    enabled = store.get_architectural_review_enabled(service_name)
+    enabled = store.get_architectural_review_globally_enabled()
     return {"service": service_name, "architectural_review_enabled": enabled}
 
 
 @app.post("/api/services/{service_name}/review-enabled")
 async def set_review_enabled(service_name: str, body: ServiceReviewSettingRequest):
     store = get_store()
-    store.set_architectural_review_enabled(service_name, body.enabled)
+    store.set_architectural_review_globally_enabled(body.enabled)
     return {"service": service_name, "architectural_review_enabled": body.enabled}
 
 
@@ -517,13 +532,12 @@ async def github_webhook(
             repo_full_name, pr["number"], producer_service,
         )
 
-        # Check if architectural review is enabled for this service
+        # Global toggle — applies to all ingested repos
         arch_review_enabled = False
-        if producer_service:
-            try:
-                arch_review_enabled = store.get_architectural_review_enabled(producer_service)
-            except Exception:
-                pass
+        try:
+            arch_review_enabled = store.get_architectural_review_globally_enabled()
+        except Exception:
+            pass
 
         if arch_review_enabled:
             client = await get_temporal_client()
@@ -640,6 +654,50 @@ async def github_webhook(
             id_conflict_policy=WorkflowIDConflictPolicy.TERMINATE_EXISTING,
         )
         logger.info("LearnFromFeedbackWorkflow triggered repo=%s pr=%s", repo_full_name, pr_number)
+        return {"status": "learn_triggered", "workflow_id": wf.id}
+
+    elif event == "pull_request_review_comment":
+        action = payload.get("action", "")
+        if action != "created":
+            return {"status": "ignored", "reason": "not a new comment"}
+
+        comment_body: str = payload.get("comment", {}).get("body", "").strip()
+        if not comment_body.lower().startswith("/learn"):
+            return {"status": "ignored", "reason": "not a /learn command"}
+
+        correction_text = comment_body[len("/learn"):].strip()
+        repo = payload["repository"]
+        repo_full_name = repo["full_name"]
+        pr_data = payload.get("pull_request", {})
+        pr_number = pr_data.get("number", 0)
+        comment_id = str(payload.get("comment", {}).get("id", ""))
+        branch = pr_data.get("head", {}).get("ref", "")
+        base_branch = pr_data.get("base", {}).get("ref", "main")
+
+        github_token = os.environ.get("RIPPLE_GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN", "")
+
+        learn_request = {
+            "correction_text": correction_text,
+            "repo_full": repo_full_name,
+            "pr_number": pr_number,
+            "comment_id": comment_id,
+            "branch": branch,
+            "base_branch": base_branch,
+            "github_token": github_token,
+        }
+
+        temporal_client = await get_temporal_client()
+        wf = await temporal_client.start_workflow(
+            LearnFromFeedbackWorkflow.run,
+            args=[learn_request],
+            id=f"learn-{repo_full_name.replace('/', '-')}-{pr_number}-{comment_id}",
+            task_queue="rib",
+            id_conflict_policy=WorkflowIDConflictPolicy.TERMINATE_EXISTING,
+        )
+        logger.info(
+            "LearnFromFeedbackWorkflow triggered (review comment) repo=%s pr=%s comment=%s",
+            repo_full_name, pr_number, comment_id,
+        )
         return {"status": "learn_triggered", "workflow_id": wf.id}
 
     return {"status": "ignored", "reason": f"unhandled event={event}"}

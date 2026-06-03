@@ -211,6 +211,13 @@ CREATE INDEX IF NOT EXISTS idx_drift_events_field ON drift_events (field_fqn);
 
 ALTER TABLE services ADD COLUMN IF NOT EXISTS architectural_review_enabled BOOLEAN NOT NULL DEFAULT FALSE;
 
+-- Global settings — intentionally excluded from /api/flush so preferences survive re-ingest
+CREATE TABLE IF NOT EXISTS global_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT ''
+);
+INSERT INTO global_settings (key, value) VALUES ('architectural_review_enabled', 'false') ON CONFLICT DO NOTHING;
+
 CREATE TABLE IF NOT EXISTS architecture_intents (
     id BIGSERIAL PRIMARY KEY,
     repo TEXT NOT NULL,

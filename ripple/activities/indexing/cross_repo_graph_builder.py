@@ -350,7 +350,8 @@ Analysis rules:
 - Test assertions marked [TEST] are GROUND TRUTH — weight them at confidence ≥ 0.9
 - ops=[divide_by_100] → consumer assumes the value is already in base units; if producer multiplies by 100 server-side → BEHAVIORAL_CHANGE or UNIT_MISMATCH
 - ops=[multiply_by_100] → consumer is converting to cents before sending; check if producer also multiplies → UNIT_MISMATCH (double-multiplication)
-- ops=[safe_navigation] or ops=[null_check] → consumer treats field as nullable; if producer declares non-nullable → NULLABLE_CHANGED
+- ops=[safe_navigation] or ops=[null_check] → consumer is being defensively safe; do NOT flag NULLABLE_CHANGED — defensive null-checks in TypeScript/Kotlin/Swift are expected and do not indicate a contract mismatch
+- NULLABLE_CHANGED should only be flagged in the dangerous direction: consumer accesses a field WITHOUT any null guard (no `?.`, no `?? fallback`, no null check) but the producer declares that field as nullable — consumer will crash when null arrives
 - ops=[parse_int] or ops=[cast_int] → consumer expects integer; if producer declares float/double → TYPE_CHANGED
 - ops=[compare_enum] → consumer compares enum values by string; if producer changed enum casing (e.g. MALE→male) → ENUM_VALUE_CHANGED
 - Role/logic inversion (e.g. role='user' now returns different data than before) → BEHAVIORAL_CHANGE

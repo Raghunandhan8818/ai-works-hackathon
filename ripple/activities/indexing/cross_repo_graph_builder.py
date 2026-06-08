@@ -361,7 +361,9 @@ Analysis rules:
 - Role/logic inversion (e.g. role='user' now returns different data than before) → BEHAVIORAL_CHANGE
 - Field renamed on wire (e.g. jwtToken→accessToken, @JsonProperty changed) → ANNOTATION_CHANGE
 - Response shape changed (e.g. role was string, now object) → STRUCTURE_CHANGE
-- Only emit disagreements when there is a real conflict — not every field needs one"""
+- Only emit disagreements when there is a real conflict — not every field needs one
+- CONSTRAINT_UNKNOWN_TO_CONSUMER: ONLY emit when consumer code shows an operation that CONFLICTS with a constraint — e.g. arithmetic producing values outside a declared minimum/maximum, or comparison against a value outside an allowed enum range. Do NOT emit simply because the consumer doesn't explicitly validate the constraint. Absence of a validation check is not a disagreement.
+- inferred_constraints in consumer_beliefs: populate with constraint-sensitive behaviour you observe — e.g. "non_negative" if consumer guards against negatives, "precision_2dp" if consumer calls toFixed(2), "enum_membership" if consumer compares against specific string values. Leave as [] only when the consumer code shows no constraint-sensitive behaviour."""
 
     client = anthropic.AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
     try:

@@ -59,7 +59,9 @@ def detect_disagreements(
                 )
             )
 
-    if belief.assumed_nullable is not None and belief.assumed_nullable != field.nullable:
+    # Only flag the dangerous direction: consumer assumes non-null but producer declares
+    # nullable. A consumer defensively null-checking a non-nullable field is harmless.
+    if belief.assumed_nullable is False and field.nullable is True:
         disagreements.append(
             Disagreement(
                 field_fqn=field.fqn,
@@ -93,23 +95,10 @@ def detect_disagreements(
                 )
             )
 
-    unknown_constraints = [
-        c.kind for c in field.constraints if c.kind not in ("format", "enum")
-    ]
-    if unknown_constraints and not belief.inferred_constraints:
-        disagreements.append(
-            Disagreement(
-                field_fqn=field.fqn,
-                consumer_service=belief.consumer_service,
-                kind=DisagreementKind.CONSTRAINT_UNKNOWN_TO_CONSUMER,
-                producer_says=",".join(unknown_constraints),
-                consumer_assumes="none_observed",
-                severity=Severity.MEDIUM,
-                evidence=[],
-                explanation="",
-                detected_at=now,
-            )
-        )
+    # CONSTRAINT_UNKNOWN_TO_CONSUMER is intentionally not detected here.
+    # Absence of constraint-checking code is not evidence of a conflict.
+    # This kind is emitted only by LLM paths (cross_repo_graph_builder,
+    # llm_disagreement_detector) which have actual code evidence to reason over.
 
     return disagreements
 

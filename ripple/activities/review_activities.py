@@ -240,84 +240,99 @@ def _format_consolidated_review(
     impacts: list[dict] = contract_findings.get("impacts", [])
     fix_results: list[dict] = contract_findings.get("fix_results", [])
 
+    arch_violations = arch_findings.get("architectural_violations", [])
+    security = arch_findings.get("security_concerns", [])
+    perf = arch_findings.get("performance_suggestions", [])
+    best = arch_findings.get("best_practices", [])
     breaking = [i for i in impacts if i.get("breaks")]
-    summary_emoji = "🔴" if breaking else "✅"
 
-    lines: list[str] = ["## Ripple Review\n"]
+    # ── Badge line ────────────────────────────────────────────────────────────
+    def _contract_badge() -> str:
+        if not field_changes:
+            return "`CONTRACT: OK`"
+        return f"`CONTRACT: {len(breaking)} breaking`" if breaking else f"`CONTRACT: {len(field_changes)} changed`"
 
-    # ── Contract Drift ────────────────────────────────────────────────────────
-    lines.append("### Contract Drift\n")
-    if not field_changes:
-        lines.append("✅ No contract changes detected.\n")
-    else:
-        lines.append(f"{summary_emoji} **{len(breaking)} breaking contract change(s)** in `{producer_service}`\n")
+    def _arch_badge() -> str:
+        if not arch_violations:
+            return "`ARCH: OK`"
+        highs = sum(1 for v in arch_violations if v.get("severity") == "HIGH")
+        meds = sum(1 for v in arch_violations if v.get("severity") == "MEDIUM")
+        parts = []
+        if highs:
+            parts.append(f"{highs} HIGH")
+        if meds:
+            parts.append(f"{meds} MEDIUM")
+        lows = len(arch_violations) - highs - meds
+        if lows:
+            parts.append(f"{lows} LOW")
+        return f"`ARCH: {', '.join(parts)}`"
+
+    def _security_badge() -> str:
+        if not security:
+            return "`SECURITY: OK`"
+        highs = sum(1 for s in security if s.get("severity") == "HIGH")
+        return f"`SECURITY: {highs} HIGH`" if highs else f"`SECURITY: {len(security)} issues`"
+
+    lines: list[str] = [
+        "## Ripple Review",
+        "",
+        f"{_contract_badge()} {_arch_badge()} {_security_badge()}",
+        "",
+    ]
+
+    # ── Contract Changes ──────────────────────────────────────────────────────
+    if field_changes:
+        lines.append("**Contract Changes**")
+        for fc in field_changes:
+            fname = fc.get("field_name", fc.get("field_fqn", "?"))
+            change = fc.get("change_summary", fc.get("change_type", "changed"))
+            lines.append(f"- `{fname}` — {change}")
         successful_fixes = [r for r in fix_results if r.get("pr_url")]
         if successful_fixes:
-            lines.append("**Auto-fix PRs raised:**")
             for r in successful_fixes:
-                lines.append(f"· `{r.get('consumer_service', '?')}` → {r.get('pr_url', '')}")
-            lines.append("")
+                svc = r.get("consumer_service", "?")
+                url = r.get("pr_url", "")
+                lines.append(f"  - `{svc}` auto-fix → {url}")
         failed_fixes = [r for r in fix_results if not r.get("pr_url")]
         if failed_fixes:
-            lines.append("**Needs manual review:**")
             for r in failed_fixes:
-                lines.append(f"· `{r.get('consumer_service', '?')}`: {r.get('error', 'unknown')}")
-            lines.append("")
+                svc = r.get("consumer_service", "?")
+                err = r.get("error", "needs manual review")
+                lines.append(f"  - `{svc}` needs manual review — {err}")
+        lines.append("")
 
-    # ── Architectural Violations ──────────────────────────────────────────────
-    arch_violations = arch_findings.get("architectural_violations", [])
-    lines.append("### Architectural Violations\n")
-    if not arch_violations:
-        lines.append("✅ No architectural violations detected.\n")
-    else:
-        for v in arch_violations:
+    # ── Violations (arch + security combined) ─────────────────────────────────
+    all_violations = (
+        [("ARCH", v) for v in arch_violations]
+        + [("SEC", s) for s in security]
+    )
+    if all_violations:
+        lines.append("**Violations**")
+        sev_order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
+        all_violations.sort(key=lambda x: sev_order.get(x[1].get("severity", "LOW"), 2))
+        for tag, v in all_violations:
             sev = v.get("severity", "MEDIUM")
-            emoji = {"HIGH": "🟠", "MEDIUM": "🟡", "LOW": "🟢"}.get(sev, "🟡")
-            lines.append(f"{emoji} **{sev}** — {v.get('description', '')}")
-            if v.get("file"):
-                lines.append(f"  *File:* `{v['file']}`")
-            if v.get("suggestion"):
-                lines.append(f"  *Suggestion:* {v['suggestion']}")
+            fname = v.get("file", "")
+            desc = v.get("description", "")
+            suggestion = v.get("suggestion", "")
+            file_part = f" `{fname}`" if fname else ""
+            fix_part = f" ({suggestion})" if suggestion else ""
+            lines.append(f"- {sev} ·{file_part} — {desc}{fix_part}")
         lines.append("")
 
-    # ── Security Concerns ─────────────────────────────────────────────────────
-    security = arch_findings.get("security_concerns", [])
-    lines.append("### Security Concerns\n")
-    if not security:
-        lines.append("✅ No security concerns detected.\n")
-    else:
-        for s in security:
-            sev = s.get("severity", "MEDIUM")
-            emoji = {"HIGH": "🔴", "MEDIUM": "🟠", "LOW": "🟡"}.get(sev, "🟠")
-            lines.append(f"{emoji} **{sev}** — {s.get('description', '')}")
-            if s.get("suggestion"):
-                lines.append(f"  *Suggestion:* {s['suggestion']}")
+    # ── Suggestions (perf + best practices combined) ──────────────────────────
+    suggestions = perf + best
+    if suggestions:
+        lines.append("**Suggestions**")
+        for s in suggestions:
+            desc = s.get("description", "")
+            suggestion = s.get("suggestion", "")
+            fix_part = f" ({suggestion})" if suggestion else ""
+            lines.append(f"- {desc}{fix_part}")
         lines.append("")
 
-    # ── Performance Suggestions ───────────────────────────────────────────────
-    perf = arch_findings.get("performance_suggestions", [])
-    lines.append("### Performance Suggestions\n")
-    if not perf:
-        lines.append("✅ No performance issues detected.\n")
-    else:
-        for p in perf:
-            lines.append(f"💡 {p.get('description', '')}")
-            if p.get("suggestion"):
-                lines.append(f"  *Suggestion:* {p['suggestion']}")
-        lines.append("")
-
-    # ── Best Practices ────────────────────────────────────────────────────────
-    best = arch_findings.get("best_practices", [])
-    if best:
-        lines.append("### Best Practices\n")
-        for b in best:
-            lines.append(f"📌 {b.get('description', '')}")
-            if b.get("suggestion"):
-                lines.append(f"  *Suggestion:* {b['suggestion']}")
-        lines.append("")
-
-    lines.append("\n---\n*[Ripple — Agentic Code Review with Architectural Intent Understanding]*")
-    lines.append("\n*Reply `/learn <correction>` on this comment to teach Ripple about your architecture.*")
+    lines.append("---")
+    lines.append("*Ripple · `/learn <rule>` to add architecture rules*")
     return "\n".join(lines)
 
 

@@ -183,6 +183,18 @@ async def _run_drift_detection(store, now: datetime) -> int:
     return written
 
 
+def _parse_constraint(c) -> dict:
+    if isinstance(c, dict):
+        return {**c, "source": c.get("source", "openapi")}
+    # Claude sometimes returns "kind=value" strings — parse them.
+    s = str(c)
+    if "=" in s:
+        kind, _, value = s.partition("=")
+        return {"kind": kind.strip(), "value": value.strip(), "source": "openapi"}
+    # Bare kind with no value (e.g., "required") — treat value as empty string.
+    return {"kind": s.strip(), "value": "", "source": "openapi"}
+
+
 def _parse_field(raw: dict) -> FieldNode:
     transport_raw = raw.get("transport", "REST")
     try:
@@ -191,8 +203,9 @@ def _parse_field(raw: dict) -> FieldNode:
         transport = TransportKind.REST
 
     constraints = [
-        {**c, "source": c.get("source", "openapi")} if isinstance(c, dict) else c
+        _parse_constraint(c)
         for c in raw.get("constraints", [])
+        if c
     ]
     return FieldNode(
         fqn=raw["fqn"],

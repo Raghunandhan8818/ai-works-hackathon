@@ -46,6 +46,7 @@ from ripple.workflows.learn_feedback import LearnFromFeedbackWorkflow
 from ripple.activities.review_activities import (
     post_consolidated_review_activity,
     process_learn_command_activity,
+    read_arch_md_activity,
     run_architectural_review_activity,
 )
 
@@ -104,6 +105,7 @@ async def main() -> None:
             mark_producer_merged_activity,
             # PR review
             post_consolidated_review_activity,
+            read_arch_md_activity,
         ],
     )
 

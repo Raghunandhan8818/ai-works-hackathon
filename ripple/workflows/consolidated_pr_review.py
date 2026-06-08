@@ -17,6 +17,7 @@ with workflow.unsafe.imports_passed_through():
     )
     from ripple.activities.review_activities import (
         post_consolidated_review_activity,
+        read_arch_md_activity,
         run_architectural_review_activity,
     )
     from ripple.workflows.auto_fix_consumer import AutoFixConsumerWorkflow
@@ -64,6 +65,15 @@ class ConsolidatedPRReviewWorkflow:
         )
         workspace: str = diff_result["workspace"]
         diff_content: str = diff_result.get("diff_content", "")
+
+        # ── Step 1.5: Read ARCHITECTURE.md on rib-io (co-located with workspace) ─
+        arch_md_content: str = await workflow.execute_activity(
+            read_arch_md_activity,
+            args=[workspace],
+            task_queue="rib-io",
+            start_to_close_timeout=timedelta(seconds=30),
+            retry_policy=IO_RETRY,
+        )
 
         try:
             # ── Step 2: Run contract analysis + architectural review in parallel ─
@@ -142,10 +152,9 @@ class ConsolidatedPRReviewWorkflow:
                 workflow.execute_activity(
                     run_architectural_review_activity,
                     args=[{
-                        "workspace": workspace,
+                        "arch_md_content": arch_md_content,
                         "diff_content": diff_content,
                         "repo_full": repo_full,
-                        "service_name": producer_service,
                     }],
                     task_queue="rib-llm",
                     start_to_close_timeout=timedelta(minutes=5),

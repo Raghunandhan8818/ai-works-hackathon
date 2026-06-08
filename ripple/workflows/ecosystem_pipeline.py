@@ -111,7 +111,7 @@ class EcosystemPipelineWorkflow:
             cross_repo_graph_builder_activity,
             args=[shared_root, {}, services_payload],
             task_queue="rib-cpu",
-            start_to_close_timeout=timedelta(minutes=5),
+            start_to_close_timeout=timedelta(minutes=20),
             retry_policy=CPU_RETRY,
         )
 

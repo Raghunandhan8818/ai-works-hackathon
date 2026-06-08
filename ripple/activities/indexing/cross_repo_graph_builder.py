@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 _GRAPH_MODEL = os.environ.get("RIPPLE_GRAPH_MODEL", "claude-sonnet-4-6")
 _MAX_FIELDS_IN_PROMPT = int(os.environ.get("RIPPLE_MAX_FIELDS_PROMPT", "20"))
 _MAX_USAGES_PER_FIELD = int(os.environ.get("RIPPLE_MAX_USAGES_PER_FIELD", "5"))
-_MAX_PARALLEL_BATCHES = int(os.environ.get("RIPPLE_MAX_PARALLEL_BATCHES", "4"))
+_MAX_PARALLEL_BATCHES = int(os.environ.get("RIPPLE_MAX_PARALLEL_BATCHES", "8"))
 
 _SYSTEM_PROMPT = """\
 You are a cross-repo API contract analyst for a microservice ecosystem.
@@ -93,6 +93,10 @@ async def cross_repo_graph_builder_activity(
             logger.warning("consumer dir missing: %s", consumer_root)
             continue
         for field in all_fields:
+            # Skip grepping a service for its own fields — it always "uses" them internally,
+            # creating false consumer beliefs and self-referential disagreements.
+            if field.producer_service == consumer_name:
+                continue
             usages = find_field_usages(consumer_root, field.name, field.fqn, consumer_name)
             all_usages.extend(usages)
 
@@ -363,7 +367,7 @@ Analysis rules:
     try:
         response = await client.messages.create(
             model=_GRAPH_MODEL,
-            max_tokens=4096,
+            max_tokens=16384,
             system=_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_prompt}],
         )

@@ -3,7 +3,7 @@ Activities for the ConsolidatedPRReviewWorkflow and LearnFromFeedbackWorkflow.
 
 Queue assignments:
   rib-llm  — run_architectural_review_activity, process_learn_command_activity
-  rib-io   — post_consolidated_review_activity
+  rib-io   — post_consolidated_review_activity, read_arch_md_activity
 """
 from __future__ import annotations
 
@@ -22,16 +22,27 @@ from ripple.rib.graph.schema import ArchitecturalIntent
 logger = logging.getLogger(__name__)
 
 
-def _sonnet(system: str, user: str, max_tokens: int = 2048) -> str:
+async def _async_sonnet(system: str, user: str, max_tokens: int = 2048) -> str:
     import anthropic
-    client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
-    msg = client.messages.create(
+    client = anthropic.AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
+    msg = await client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=max_tokens,
         system=system,
         messages=[{"role": "user", "content": user}],
     )
     return msg.content[0].text
+
+
+# ── Activity 0: Read ARCHITECTURE.md (rib-io, co-located with workspace) ─────
+
+@activity.defn(name="read_arch_md_activity")
+async def read_arch_md_activity(workspace: str) -> str:
+    """Reads ARCHITECTURE.md from a cloned workspace. Runs on rib-io where the workspace exists."""
+    arch_md_path = Path(workspace) / "ARCHITECTURE.md"
+    if arch_md_path.exists():
+        return arch_md_path.read_text(encoding="utf-8", errors="ignore")[:8000]
+    return ""
 
 
 # ── Activity 1: Run architectural review ─────────────────────────────────────
@@ -68,19 +79,13 @@ Do not invent violations — only flag real issues visible in the diff.
 async def run_architectural_review_activity(payload: dict) -> dict:
     """
     payload keys:
-      workspace: str — path to the cloned repo workspace
+      arch_md_content: str — content of ARCHITECTURE.md (pre-read on rib-io via read_arch_md_activity)
       diff_content: str — the PR diff text
       repo_full: str — "owner/repo" used as lookup key for learned intents
     """
-    workspace: str = payload["workspace"]
+    arch_md_content: str = payload.get("arch_md_content", "")
     diff_content: str = payload["diff_content"]
     repo_full: str = payload.get("repo_full", "")
-
-    # Read ARCHITECTURE.md from workspace if it exists
-    arch_md_path = Path(workspace) / "ARCHITECTURE.md"
-    arch_md_content = ""
-    if arch_md_path.exists():
-        arch_md_content = arch_md_path.read_text(encoding="utf-8", errors="ignore")[:8000]
 
     # Load learned intents from DB
     learned_intents: list[str] = []
@@ -106,8 +111,7 @@ async def run_architectural_review_activity(payload: dict) -> dict:
     user_prompt = f"## Architectural Constraints\n\n{constraints_block}\n\n## PR Diff\n\n```diff\n{diff_content[:12000]}\n```"
 
     try:
-        raw = _sonnet(_ARCH_REVIEW_SYSTEM, user_prompt, max_tokens=2048)
-        # Strip markdown code fences if present
+        raw = await _async_sonnet(_ARCH_REVIEW_SYSTEM, user_prompt, max_tokens=2048)
         raw = raw.strip()
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1].rsplit("```", 1)[0]
@@ -163,7 +167,7 @@ async def process_learn_command_activity(payload: dict) -> dict:
     user_prompt = f"Developer correction: {correction_text}\n\nPR diff context:\n```diff\n{diff_context}\n```"
 
     try:
-        raw = _sonnet(_LEARN_SYSTEM, user_prompt, max_tokens=512)
+        raw = await _async_sonnet(_LEARN_SYSTEM, user_prompt, max_tokens=512)
         raw = raw.strip()
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1].rsplit("```", 1)[0]
@@ -187,14 +191,19 @@ async def process_learn_command_activity(payload: dict) -> dict:
         pr_comment_id=str(comment_id),
     )
 
+    stored = False
     try:
         get_store().upsert_architecture_intent(intent)
+        stored = True
         logger.info("Stored architectural intent from /learn: repo=%s type=%s", repo_full, intent.constraint_type)
     except Exception:
-        logger.warning("Failed to store architectural intent", exc_info=True)
+        logger.error(
+            "Failed to store architectural intent — DB write failed repo=%s rule=%s",
+            repo_full, intent.natural_language, exc_info=True,
+        )
 
-    # Post acknowledgement reply on PR
-    if github_token and repo_full:
+    # Only post acknowledgement if the rule was actually persisted
+    if stored and github_token and repo_full:
         ack_body = (
             f"**Ripple learned:** {intent.natural_language}\n\n"
             f"*This rule will be applied to future PR reviews for `{repo_full}`.*"
@@ -217,7 +226,7 @@ async def process_learn_command_activity(payload: dict) -> dict:
         except Exception:
             logger.warning("Failed to post /learn acknowledgement", exc_info=True)
 
-    return {"stored": True, "constraint_type": intent.constraint_type, "natural_language": intent.natural_language}
+    return {"stored": stored, "constraint_type": intent.constraint_type, "natural_language": intent.natural_language}
 
 
 # ── Activity 3: Post consolidated GitHub review ───────────────────────────────
